@@ -1,0 +1,48 @@
+{
+  "event": "messages.upsert",
+  "instance": "zum_tracking",
+  "data": {
+    "key": {
+      "remoteJid": "5591981617148@s.whatsapp.net",
+      "fromMe": false,
+      "id": "87FDBB3D7F5D2820847CC01FE7CA168B"
+    },
+    "pushName": "Lead Anonimizado",
+    "message": {
+      "messageContextInfo": {
+        "deviceListMetadataVersion": 2
+      },
+      "conversation": "Olá! Tenho interesse em ter uma estrutura 100% rastreada e traqueada no WPP."
+    },
+    "contextInfo": {
+      "conversionSource": "FB_Ads",
+      "conversionData": "QVJEeGwzRlVRQ2R2bld0YWQzanJjOHNZ...TRUNCADO_NA_FIXTURE",
+      "conversionDelaySeconds": 4,
+      "externalAdReply": {
+        "title": "Rastreio e Tracking de WPP",
+        "body": "Você faz campanhas direto para o WPP?",
+        "mediaType": "VIDEO",
+        "thumbnailUrl": "https://scontent.xx.fbcdn.net/v/t15.5256-10/455812560.jpg",
+        "mediaUrl": "https://www.facebook.com/dericsoncalari/videos/3810417475905123/",
+        "thumbnail": "/9j/4AAQSkZJRgABAQAAAQABAAD_TRUNCADO_NA_FIXTURE",
+        "sourceType": "ad",
+        "sourceId": "120223766489610787",
+        "sourceUrl": "https://www.instagram.com/p/C-tNHk_gbQf/",
+        "containsAutoReply": false,
+        "renderLargerThumbnail": true,
+        "showAdAttribution": true,
+        "ctwaClid": "ARBOL5_ANONIMIZADO_mesmo_formato_do_real_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      },
+      "trustBannerAction": 4294967295
+    },
+    "messageType": "extendedTextMessage",
+    "messageTimestamp": 1727448763,
+    "instanceId": "2152e6f5-14d1-420b-9611-c6a4e325d311",
+    "source": "android"
+  },
+  "destination": "https://exemplo/webhook",
+  "date_time": "2024-09-27T11:52:43.324Z",
+  "sender": "5511933444333@s.whatsapp.net",
+  "server_url": "https://exemplo.com.br",
+  "apikey": "CHAVE-ANONIMIZADA-0000-0000-000000000001"
+}
