@@ -36,6 +36,10 @@ implicitamente.
 - **Fixtures são payloads reais** capturados da instância do operador. Payload
   inventado a partir de documentação não serve como fixture.
 - **Migrations nomeadas** `YYYYMMDDHHMMSS_descricao.sql` em `supabase/migrations/`.
+- **Sem Docker nesta máquina.** Migrations vão ao projeto remoto com
+  `supabase db push`; testes rodam com `python3 scripts/run_pgtap.py <arquivo>`.
+  Toda suíte pgTAP deve ser uma única expressão `select unnest(array[...])`,
+  formato que o runner espera.
 - **Commits em português**, imperativo, explicando o porquê e não o quê.
 
 ## Estrutura de Arquivos
@@ -109,25 +113,33 @@ que mora a lógica que mais erra, e função pura é a que se testa melhor.
 - Produz: tabelas `tenants`, `ad_accounts`, `evolution_instances`; função
   `current_tenant_id() returns uuid` usada por toda política RLS posterior.
 
-- [ ] **Passo 1: Inicializar o projeto Supabase local**
+- [ ] **Passo 1: Confirmar acesso ao banco remoto**
+
+Não há Docker nesta máquina, e o operador optou por trabalhar direto no
+projeto Supabase remoto — que está vazio e é ambiente de teste.
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
-supabase init
-supabase link --project-ref gnalpuiulirleagdwycu
-supabase start
+set -a && . ./.env && set +a
+supabase migration list --linked
 ```
 
-`supabase start` sobe Postgres local em Docker. Todo desenvolvimento e teste
-acontece nele; o projeto remoto só recebe migrations validadas.
+`supabase init` e `supabase link` já foram executados. As migrations vão para
+o remoto com `supabase db push`, e os testes rodam por
+`scripts/run_pgtap.py`.
+
+**Consequência que vale saber:** sem banco local não há rede de segurança —
+migration com erro chega ao projeto de verdade. Como o banco está vazio e é
+de teste, o risco é aceitável agora; quando houver dado de cliente, isso
+precisa mudar.
 
 - [ ] **Passo 2: Escrever o teste de isolamento que falha**
 
 Criar `supabase/tests/database/01_rls.test.sql`:
 
 ```sql
-begin;
-select plan(4);
+select unnest(array[
+  extensions.plan(4),
 
 -- Dois tenants e um usuário para cada
 insert into tenants (id, nome, slug) values
@@ -183,13 +195,17 @@ isolar.
 - [ ] **Passo 3: Rodar o teste e confirmar que falha**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/01_rls.test.sql
 ```
 
-Esperado: FALHA. A mensagem provável é `function plan(integer) does not
-exist` — o pgTAP ainda não foi instalado, então o teste quebra já na
-primeira linha, antes de chegar em `tenants`. Qualquer uma das duas falhas
-serve; o que importa é que o teste não passa sem a implementação.
+Esperado: FALHA com `relation "tenants" does not exist`. O pgTAP 1.3.3 já
+está instalado no projeto, então o erro vem da tabela que ainda não existe.
+
+**Como o runner funciona:** a API de query do Supabase commita cada chamada,
+então `begin/rollback` não é aceito. O runner envolve a suíte num bloco que
+termina levantando exceção de propósito — a exceção desfaz as fixtures e
+devolve o relatório pela mensagem de erro. Verificado: o banco fica limpo
+depois de cada execução.
 
 - [ ] **Passo 4: Escrever as migrations**
 
@@ -283,13 +299,14 @@ Nenhuma política para `anon`: ausência de política com RLS ligado significa
 acesso negado. As Edge Functions usam `service_role`, que contorna RLS por
 ser confiável.
 
-- [ ] **Passo 5: Rodar o teste e confirmar que passa**
+- [ ] **Passo 5: Aplicar a migration e rodar o teste**
 
 ```bash
-supabase test db
+supabase db push
+python3 scripts/run_pgtap.py supabase/tests/database/01_rls.test.sql
 ```
 
-Esperado: 4 testes passando.
+Esperado: 4 testes passando, nenhum `not ok`.
 
 - [ ] **Passo 6: Commit**
 
@@ -1404,8 +1421,8 @@ justamente durante o incidente em que você mais precisa dela.
 Criar `supabase/tests/database/03_reconciliacao.test.sql`:
 
 ```sql
-begin;
-select plan(4);
+select unnest(array[
+  extensions.plan(4),
 
 insert into tenants (id, nome, slug)
 values ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a');
@@ -2142,8 +2159,8 @@ der."
 Criar `supabase/tests/database/05_monitoramento.test.sql`:
 
 ```sql
-begin;
-select plan(4);
+select unnest(array[
+  extensions.plan(4),
 
 insert into tenants (id, nome, slug)
 values ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a');
