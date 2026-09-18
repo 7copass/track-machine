@@ -77,10 +77,16 @@ export async function buscarMetadataDoAnuncio(
       campaignName: j.campaign?.name ?? null,
       objetivo: j.campaign?.objective ?? null,
     };
-  } catch {
+  } catch (e) {
     // Rede fora, DNS, timeout: mesmo tratamento das demais falhas. O
     // touchpoint continua gravado com o ad_id e a proxima varredura tenta
     // de novo.
+    //
+    // A atribuicao aqui nao e detalhe: sem ela, ultimaFalha fica null
+    // depois de uma queda de rede, e null significa "nenhuma falha" para
+    // quem le. O campo passaria a mentir justamente quando mais importa.
+    ultimaFalha = "rede";
+    console.warn(`Falha de rede ao consultar o anuncio ${adId}`, e);
     return null;
   }
 }

@@ -43,6 +43,11 @@ implicitamente.
   `supabase db push`; testes rodam com `python3 scripts/run_pgtap.py <arquivo>`.
   Toda suíte pgTAP deve ser uma única expressão `select unnest(array[...])`,
   formato que o runner espera.
+- **O rollback do runner desfaz DDL também.** Isso permite verificar por
+  mutação se uma asserção tem dente — desligar RLS ou `security_invoker`
+  dentro da própria suíte, ver o teste ficar vermelho, e o estado real do
+  banco continuar intacto. Vale usar sempre que um teste de isolamento for
+  escrito.
 - **Asserção só enxerga fixture se receber SQL como texto.** `results_eq`,
   `is_empty`, `lives_ok` e `throws_ok` executam via `EXECUTE` e abrem
   consulta nova. Já `is()` e `ok()` com subconsulta inline são planejados
@@ -1383,10 +1388,14 @@ lead falso no painel de um cliente."
 > Passo 5 daquela tarefa.
 
 **Interfaces:**
-- Consome: `ad_touchpoints` (Tarefa 4), `AdReply` (Tarefa 3).
+- Consome: nada. O módulo é puro: recebe config e dados, fala HTTP, não
+  toca no banco nem importa tipo de outra tarefa.
 - Produz: `buscarContatoPorTelefone(cfg, telefone): Promise<number | null>`,
   `gravarAtributosDeOrigem(cfg, contatoId, origem): Promise<boolean>`,
-  tipo `ChatwootConfig = { baseUrl: string; accountId: number; token: string }`.
+  `ultimaFalha: FalhaChatwoot`, e os tipos `ChatwootConfig = { baseUrl,
+  accountId, token }` e `OrigemDoLead = { ctwa_clid, ad_id, campaign_id,
+  veio_de_anuncio }` — em snake_case porque espelham os custom attributes
+  do Chatwoot.
 
 > **Esta tarefa roda sem credencial.** Todos os testes usam `fetch` mockado.
 > A URL e o token do Chatwoot já estão no `.env`; o `account_id` de cada
@@ -1555,6 +1564,9 @@ Criar `supabase/migrations/20260918000700_chatwoot_config.sql`:
 ```sql
 create table chatwoot_configs (
   tenant_id   uuid primary key references tenants(id) on delete cascade,
+  -- O default aponta para a instancia do operador. Defensavel enquanto
+  -- houver um operador so; vira armadilha silenciosa no dia em que um
+  -- cliente tiver Chatwoot proprio e for cadastrado sem base_url.
   base_url    text not null default 'https://chat.leaderaperformance.com.br',
   -- Cadastrado manualmente pelo operador no onboarding de cada cliente
   account_id  bigint not null,

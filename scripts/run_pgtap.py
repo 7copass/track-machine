@@ -25,7 +25,9 @@ def carregar_env() -> None:
         linha = linha.strip()
         if linha and not linha.startswith("#") and "=" in linha:
             k, v = linha.split("=", 1)
-            os.environ.setdefault(k.strip(), v.strip())
+            # setdefault deixaria uma variavel ja exportada no shell
+            # vencer o .env em silencio — e apontar para o projeto errado.
+            os.environ[k.strip()] = v.strip()
 
 
 def executar(sql: str) -> tuple[bool, object]:
