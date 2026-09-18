@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import urllib.error
 import urllib.request
@@ -66,6 +67,40 @@ $runner$;
 """
 
 
+def avaliar(linhas: list[str]) -> list[str]:
+    """Decide se a suíte passou de verdade.
+
+    Procurar só por "not ok" não basta: uma suíte que morre no meio emite
+    as asserções que deu tempo de rodar, o pgTAP acrescenta um diagnóstico
+    com "#", e a leitura ingênua enxerga isso como verde. Falso-verde é
+    pior que falha, porque ninguém vai investigar.
+    """
+    problemas: list[str] = []
+
+    falhas = [l for l in linhas if l.startswith("not ok")]
+    if falhas:
+        problemas.append(f"{len(falhas)} asserção(ões) falharam")
+
+    # O pgTAP avisa quando o número de testes não bate com o plano
+    for l in linhas:
+        if "Looks like you planned" in l or "Looks like you failed" in l:
+            problemas.append(f"pgTAP reclamou: {l.lstrip('# ').strip()}")
+
+    # Plano ausente: sem "1..N" não há como saber se rodou tudo
+    plano = next((l for l in linhas if re.fullmatch(r"1\.\.\d+", l.strip())), None)
+    if not plano:
+        problemas.append("sem linha de plano (1..N) — a suíte não declarou quantos testes esperava")
+        return problemas
+
+    # Confere a contagem, independente do que o pgTAP disse
+    esperados = int(plano.strip().split("..")[1])
+    rodados = len([l for l in linhas if re.match(r"(not )?ok \d+", l)])
+    if rodados != esperados:
+        problemas.append(f"plano previa {esperados} teste(s), rodaram {rodados}")
+
+    return problemas
+
+
 def main() -> int:
     carregar_env()
 
@@ -94,13 +129,15 @@ def main() -> int:
         relato = relato.replace("\\n", "\n").strip()
 
         linhas = [l for l in relato.splitlines() if l.strip()]
-        falhas = [l for l in linhas if l.startswith("not ok")]
+        problemas = avaliar(linhas)
 
-        print(f"\n{'✗' if falhas else '✓'} {arquivo.name}")
+        print(f"\n{'✗' if problemas else '✓'} {arquivo.name}")
         for l in linhas:
             print(f"    {l}")
+        for p in problemas:
+            print(f"    ⚠ {p}")
 
-        if falhas:
+        if problemas:
             falhou_algum = True
 
     print()

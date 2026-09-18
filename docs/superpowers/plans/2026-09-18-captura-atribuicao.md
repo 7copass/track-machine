@@ -138,53 +138,81 @@ precisa mudar.
 Criar `supabase/tests/database/01_rls.test.sql`:
 
 ```sql
-select unnest(array[
-  extensions.plan(4),
+-- Isolamento entre tenants, provado por execucao.
+--
+-- Formato: o runner (scripts/run_pgtap.py) envolve este arquivo num
+-- "for linha in <consulta> loop", entao a suite inteira precisa ser UMA
+-- consulta. Daqui saem tres adaptacoes:
+--
+--   1. As fixtures entram como extensions.lives_ok($$insert ...$$): e o
+--      unico jeito de executar comando dentro de uma expressao, e cada
+--      chamada pgTAP abre nova consulta interna, entao a assercao
+--      seguinte ja enxerga as linhas inseridas.
+--   2. "set local role" vira set_config('role', ..., true), a forma
+--      funcional do mesmo comando, embrulhada em diag() para sair como
+--      comentario TAP em vez de linha solta no relatorio.
+--   3. finish() devolve setof text e nao cabe no array; vem por union all
+--      com "order by ord" garantindo que roda por ultimo.
+--
+-- Casts explicitos de tipo em toda parte: sem eles o Postgres nao resolve
+-- os parametros polimorficos do pgTAP.
+select tap from (
+  select 1 as ord, unnest(array[
+    extensions.plan(6),
 
--- Dois tenants e um usuário para cada
-insert into tenants (id, nome, slug) values
-  ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a'),
-  ('22222222-2222-2222-2222-222222222222', 'Cliente B', 'cliente-b');
+    -- Dois tenants e uma conta de anuncio para cada um
+    extensions.lives_ok(
+      $$insert into tenants (id, nome, slug) values
+          ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a'),
+          ('22222222-2222-2222-2222-222222222222', 'Cliente B', 'cliente-b')$$,
+      'fixtures: dois tenants cadastrados'
+    ),
+    extensions.lives_ok(
+      $$insert into ad_accounts (tenant_id, act_id, nome) values
+          ('11111111-1111-1111-1111-111111111111', 'act_111', 'Conta A'),
+          ('22222222-2222-2222-2222-222222222222', 'act_222', 'Conta B')$$,
+      'fixtures: uma conta de anuncio para cada tenant'
+    ),
 
-insert into ad_accounts (tenant_id, act_id, nome) values
-  ('11111111-1111-1111-1111-111111111111', 'act_111', 'Conta A'),
-  ('22222222-2222-2222-2222-222222222222', 'act_222', 'Conta B');
+    -- Papel anonimo nao enxerga nada
+    extensions.diag(set_config('role', 'anon', true)),
+    extensions.is_empty(
+      'select * from ad_accounts',
+      'anon nao le nenhuma conta de anuncio'
+    ),
 
--- Papel anônimo não enxerga nada
-set local role anon;
-select is_empty(
-  'select * from ad_accounts',
-  'anon nao le nenhuma conta de anuncio'
-);
+    -- Tenant A autenticado enxerga so o que e dele
+    extensions.diag(set_config('role', 'authenticated', true)),
+    extensions.diag(set_config(
+      'request.jwt.claims',
+      '{"tenant_id":"11111111-1111-1111-1111-111111111111"}',
+      true
+    )),
+    extensions.results_eq(
+      'select act_id from ad_accounts',
+      array['act_111'::text],
+      'tenant A enxerga apenas a propria conta'
+    ),
+    extensions.is_empty(
+      $$select * from ad_accounts where act_id = 'act_222'$$,
+      'tenant A nao alcanca a conta do tenant B nem filtrando por ela'
+    ),
 
--- Tenant A autenticado enxerga só o que é dele
-set local role authenticated;
-set local request.jwt.claims =
-  '{"tenant_id":"11111111-1111-1111-1111-111111111111"}';
-
-select results_eq(
-  'select act_id from ad_accounts',
-  array['act_111'],
-  'tenant A enxerga apenas a propria conta'
-);
-
-select is_empty(
-  $$select * from ad_accounts where act_id = 'act_222'$$,
-  'tenant A nao alcanca a conta do tenant B nem filtrando por ela'
-);
-
--- Tenant B enxerga o dele
-set local request.jwt.claims =
-  '{"tenant_id":"22222222-2222-2222-2222-222222222222"}';
-
-select results_eq(
-  'select act_id from ad_accounts',
-  array['act_222'],
-  'tenant B enxerga apenas a propria conta'
-);
-
-select * from finish();
-rollback;
+    -- Tenant B enxerga o dele
+    extensions.diag(set_config(
+      'request.jwt.claims',
+      '{"tenant_id":"22222222-2222-2222-2222-222222222222"}',
+      true
+    )),
+    extensions.results_eq(
+      'select act_id from ad_accounts',
+      array['act_222'::text],
+      'tenant B enxerga apenas a propria conta'
+    )
+  ]) as tap
+  union all
+  select 2, * from extensions.finish()
+) t order by ord
 ```
 
 O terceiro caso é o que importa de verdade: não basta o `SELECT` sem filtro
@@ -306,7 +334,7 @@ supabase db push
 python3 scripts/run_pgtap.py supabase/tests/database/01_rls.test.sql
 ```
 
-Esperado: 4 testes passando, nenhum `not ok`.
+Esperado: 6 testes passando, nenhum `not ok`. (São 6 e não 4 porque as duas fixtures viram asserções contadas — `lives_ok` é o único jeito de executar comando dentro de uma expressão.)
 
 - [x] **Passo 6: Commit**
 
@@ -533,6 +561,26 @@ Deno.test("nao entra em loop com referencia circular", () => {
   assertEquals(extrairAdReply(circular), null);
 });
 
+Deno.test("deduz instagram pelo sourceUrl quando sourceApp nao existe", async () => {
+  // A versao antiga do Evolution nao manda sourceApp. Confirmado nos
+  // dois payloads reais: um tem, o outro nao.
+  const r = extrairAdReply(await fixture("extendedtext_ctwa_sem_chatwoot"));
+  assertEquals(r!.sourceApp, "instagram");
+});
+
+Deno.test("nao deduz plataforma pelo mediaUrl", () => {
+  // mediaUrl aponta para facebook.com mesmo em anuncio do Instagram:
+  // e so onde o video esta hospedado. Usar ele classificaria errado.
+  const p = {
+    data: { contextInfo: { externalAdReply: {
+      sourceId: "1", sourceType: "ad",
+      sourceUrl: "https://www.instagram.com/p/ABC/",
+      mediaUrl: "https://www.facebook.com/alguem/videos/123/",
+    } } },
+  };
+  assertEquals(extrairAdReply(p)!.sourceApp, "instagram");
+});
+
 Deno.test("sobrevive a anuncio sem ctwaClid", () => {
   // Protocolo mudou ou anuncio antigo: adId presente, clid ausente.
   // Precisa devolver o que tem, nao descartar tudo.
@@ -610,6 +658,26 @@ function acharNo(raiz: unknown): Record<string, unknown> | null {
   return null;
 }
 
+/**
+ * Deduz a plataforma do anúncio.
+ *
+ * `sourceApp` seria o campo óbvio, mas ele não existe em versões mais
+ * antigas do Evolution — confirmado comparando dois payloads reais. O
+ * `sourceUrl` está nos dois.
+ *
+ * Não usar `mediaUrl`: ele aponta para facebook.com mesmo em anúncio que
+ * rodou no Instagram, porque é só onde o vídeo está hospedado.
+ */
+export function derivarPlataforma(no: Record<string, unknown>): string | null {
+  const app = texto(no["sourceApp"]);
+  if (app) return app.toLowerCase();
+
+  const url = (texto(no["sourceUrl"]) ?? "").toLowerCase();
+  if (url.includes("instagram.com")) return "instagram";
+  if (url.includes("facebook.com") || url.includes("fb.com")) return "facebook";
+  return null;
+}
+
 export function extrairAdReply(payload: unknown): AdReply | null {
   const no = acharNo(payload);
   if (!no) return null;
@@ -618,7 +686,7 @@ export function extrairAdReply(payload: unknown): AdReply | null {
     ctwaClid: texto(no["ctwaClid"]),
     adId: texto(no["sourceId"]),
     sourceUrl: texto(no["sourceUrl"]),
-    sourceApp: texto(no["sourceApp"]),
+    sourceApp: derivarPlataforma(no),
     title: texto(no["title"]),
     body: texto(no["body"]),
   };
@@ -631,7 +699,7 @@ export function extrairAdReply(payload: unknown): AdReply | null {
 deno test --allow-read tests/unit/ad_reply_test.ts
 ```
 
-Esperado: 8 testes passando.
+Esperado: 10 testes passando.
 
 - [ ] **Passo 6: Commit**
 
@@ -669,76 +737,83 @@ campanha, mesmo perdendo a atribuicao de clique."
 Criar `supabase/tests/database/02_touchpoints.test.sql`:
 
 ```sql
-begin;
-select plan(5);
+-- Formato exigido pelo runner (scripts/run_pgtap.py): a suite inteira
+-- precisa ser UMA consulta. Fixtures entram por lives_ok, "set local" vira
+-- set_config(...) dentro de diag(), e finish() vem por union all com
+-- order by ord para rodar por ultimo. Casts explicitos em toda parte.
 
-insert into tenants (id, nome, slug) values
-  ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a'),
-  ('22222222-2222-2222-2222-222222222222', 'Cliente B', 'cliente-b');
+select tap from (
+  select 1 as ord, unnest(array[
+    extensions.plan(7),
 
-insert into ad_touchpoints
-  (tenant_id, wa_message_id, phone_e164, phone_match_key,
-   ctwa_clid, ad_id, source_channel, received_at, raw_payload)
-values
-  ('11111111-1111-1111-1111-111111111111', 'MSG_A1', '+5511900000001',
-   '551190000001', 'clid_a1', 'ad_1', 'evolution', now(), '{}'::jsonb),
-  ('22222222-2222-2222-2222-222222222222', 'MSG_B1', '+5511900000002',
-   '551190000002', 'clid_b1', 'ad_2', 'evolution', now(), '{}'::jsonb);
+    extensions.lives_ok(
+      $$insert into tenants (id, nome, slug) values
+          ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a'),
+          ('22222222-2222-2222-2222-222222222222', 'Cliente B', 'cliente-b')$$,
+      'fixtures: dois tenants'
+    ),
+    extensions.lives_ok(
+      $$insert into ad_touchpoints
+          (tenant_id, wa_message_id, phone_e164, phone_match_key,
+           ctwa_clid, ad_id, source_channel, received_at, raw_payload)
+        values
+          ('11111111-1111-1111-1111-111111111111', 'MSG_A1', '+5511900000001',
+           '551190000001', 'clid_a1', 'ad_1', 'evolution', now(), '{}'::jsonb),
+          ('22222222-2222-2222-2222-222222222222', 'MSG_B1', '+5511900000002',
+           '551190000002', 'clid_b1', 'ad_2', 'evolution', now(), '{}'::jsonb)$$,
+      'fixtures: um touchpoint para cada tenant'
+    ),
 
--- Idempotencia: o mesmo wa_message_id nao entra duas vezes
-insert into ad_touchpoints
-  (tenant_id, wa_message_id, phone_e164, phone_match_key,
-   source_channel, received_at, raw_payload)
-values
-  ('11111111-1111-1111-1111-111111111111', 'MSG_A1', '+5511900000001',
-   '551190000001', 'evolution', now(), '{}'::jsonb)
-on conflict (tenant_id, wa_message_id) do nothing;
+    -- Idempotencia: o Evolution reenvia webhook, e reenvia sempre
+    extensions.lives_ok(
+      $$insert into ad_touchpoints
+          (tenant_id, wa_message_id, phone_e164, phone_match_key,
+           source_channel, received_at, raw_payload)
+        values
+          ('11111111-1111-1111-1111-111111111111', 'MSG_A1', '+5511900000001',
+           '551190000001', 'evolution', now(), '{}'::jsonb)
+        on conflict (tenant_id, wa_message_id) do nothing$$,
+      'reenvio do mesmo webhook nao estoura'
+    ),
+    extensions.is(
+      (select count(*)::int from ad_touchpoints where wa_message_id = 'MSG_A1'),
+      1::int,
+      'reenvio do mesmo webhook nao duplica o lead'
+    ),
 
-select is(
-  (select count(*)::int from ad_touchpoints
-     where wa_message_id = 'MSG_A1'),
-  1,
-  'reenvio do mesmo webhook nao duplica o lead'
-);
+    -- Append-only: alterar a origem e bloqueado pelo trigger
+    extensions.throws_ok(
+      $$update ad_touchpoints set ad_id = 'outro' where wa_message_id = 'MSG_A1'$$,
+      'P0001', null,
+      'alterar a origem de um touchpoint e bloqueado'
+    ),
+    -- Campos de reconciliacao seguem alteraveis
+    extensions.lives_ok(
+      $$update ad_touchpoints
+           set chatwoot_contact_id = 42, reconciled_at = now()
+         where wa_message_id = 'MSG_A1'$$,
+      'campos de reconciliacao permanecem alteraveis'
+    ),
 
--- Append-only: alterar a origem de um touchpoint e bloqueado
-select throws_ok(
-  $$update ad_touchpoints set ad_id = 'outro' where wa_message_id = 'MSG_A1'$$,
-  null,
-  'alterar a origem de um touchpoint e bloqueado'
-);
-
--- Campos de reconciliacao continuam alteraveis
-select lives_ok(
-  $$update ad_touchpoints set chatwoot_contact_id = 42,
-      reconciled_at = now() where wa_message_id = 'MSG_A1'$$,
-  'campos de reconciliacao permanecem alteraveis'
-);
-
--- Isolamento
-set local role authenticated;
-set local request.jwt.claims =
-  '{"tenant_id":"11111111-1111-1111-1111-111111111111"}';
-
-select results_eq(
-  'select wa_message_id from ad_touchpoints',
-  array['MSG_A1'],
-  'tenant A enxerga apenas os proprios touchpoints'
-);
-
-select is_empty(
-  $$select * from ad_touchpoints where wa_message_id = 'MSG_B1'$$,
-  'tenant A nao alcanca touchpoint do tenant B'
-);
-
-select * from finish();
-rollback;
+    -- Isolamento
+    extensions.diag(set_config('role', 'authenticated', true)),
+    extensions.diag(set_config(
+      'request.jwt.claims',
+      '{"tenant_id":"11111111-1111-1111-1111-111111111111"}', true)),
+    extensions.is_empty(
+      $$select * from ad_touchpoints where wa_message_id = 'MSG_B1'$$,
+      'tenant A nao alcanca touchpoint do tenant B'
+    )
+  ]) as tap
+  union all
+  select 2, * from extensions.finish()
+) t order by ord
 ```
 
 - [ ] **Passo 2: Rodar e confirmar que falha**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: FALHA com `relation "ad_touchpoints" does not exist`.
@@ -756,6 +831,11 @@ create table ad_touchpoints (
   wa_message_id             text not null,
   phone_e164                text not null,
   phone_match_key           text not null,
+
+  -- Lead de verdade chega com fromMe false. Guardado para diagnostico:
+  -- um payload real veio com true carregando contexto de anuncio, e vale
+  -- poder separar os dois casos depois sem reprocessar tudo.
+  from_me                   boolean,
 
   ctwa_clid                 text,
   ad_id                     text,
@@ -841,7 +921,7 @@ create policy tenant_le_as_proprias_conversoes on conversion_events
 - [ ] **Passo 4: Rodar e confirmar que passa**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: 5 testes passando (9 no total com a Tarefa 1).
@@ -1064,9 +1144,9 @@ Deno.serve(async (req: Request) => {
     ? new Date(Number(timestamp) * 1000).toISOString()
     : new Date().toISOString();
 
-  // O Evolution ja integrado ao Chatwoot manda os ids no proprio payload.
-  // Quando vem, o vinculo nasce pronto e a reconciliacao nem precisa
-  // acontecer. Quando nao vem, a Tarefa 7 recupera por telefone e tempo.
+  // Bonus opcional: instancia com a integracao nativa Evolution-Chatwoot
+  // ligada manda o id da conversa no payload. A maioria NAO tem, entao o
+  // caminho normal e o touchpoint nascer orfao e a Tarefa 7 reconciliar.
   const conversaChatwoot = dados?.chatwootConversationId ?? null;
 
   // ON CONFLICT DO NOTHING: Evolution reenvia webhook, e reenvia sempre
@@ -1076,6 +1156,7 @@ Deno.serve(async (req: Request) => {
     wa_message_id: waMessageId,
     phone_e164: e164,
     phone_match_key: toMatchKey(e164),
+    from_me: dados?.key?.fromMe ?? null,
     ctwa_clid: anuncio.ctwaClid,
     ad_id: anuncio.adId,
     platform: anuncio.sourceApp,
@@ -1375,7 +1456,7 @@ import { buscarContatoPorTelefone, gravarAtributosDeOrigem } from "../_shared/ch
 
 ```bash
 deno test --allow-net --allow-read tests/unit/
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: tudo passando.
@@ -1411,6 +1492,11 @@ tabela de configuracao nao leva as credenciais junto."
 - Produz: tabela `chatwoot_conversations`, função
   `reconciliar_orfaos(janela_min int) returns int`, job `pg_cron` de 1 minuto.
 
+**Este é o caminho principal, não a exceção.** Comparando dois payloads reais,
+só um trazia os ids do Chatwoot — a instância dele tinha a integração nativa
+ligada. A maioria não tem, então o touchpoint nasce órfão e precisa ser
+reconciliado aqui.
+
 **Decisão de desenho:** o webhook do Chatwoot grava as conversas numa tabela
 local. Com isso a reconciliação vira um `JOIN` em SQL puro, sem chamada de
 API. Reconciliação que depende de rede falha quando a rede falha — e falha
@@ -1421,87 +1507,85 @@ justamente durante o incidente em que você mais precisa dela.
 Criar `supabase/tests/database/03_reconciliacao.test.sql`:
 
 ```sql
-select unnest(array[
-  extensions.plan(4),
+-- Formato exigido pelo runner (scripts/run_pgtap.py): a suite inteira
+-- precisa ser UMA consulta. Fixtures entram por lives_ok, "set local" vira
+-- set_config(...) dentro de diag(), e finish() vem por union all com
+-- order by ord para rodar por ultimo. Casts explicitos em toda parte.
 
-insert into tenants (id, nome, slug)
-values ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a');
+select tap from (
+  select 1 as ord, unnest(array[
+    extensions.plan(6),
 
--- Caso 1: Evolution chegou primeiro, Chatwoot depois
-insert into ad_touchpoints
-  (tenant_id, wa_message_id, phone_e164, phone_match_key,
-   ctwa_clid, ad_id, source_channel, received_at, raw_payload)
-values
-  ('11111111-1111-1111-1111-111111111111', 'MSG_1', '+5511987654321',
-   '551187654321', 'clid_1', 'ad_1', 'evolution',
-   now() - interval '2 minutes', '{}'::jsonb);
+    extensions.lives_ok(
+      $$insert into tenants (id, nome, slug) values
+          ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a')$$,
+      'fixtures: um tenant'
+    ),
 
-insert into chatwoot_conversations
-  (id, tenant_id, contact_id, phone_e164, phone_match_key, criada_em)
-values
-  (9001, '11111111-1111-1111-1111-111111111111', 501, '+5511987654321',
-   '551187654321', now() - interval '1 minute');
+    -- Caso 1: Evolution chegou antes, Chatwoot depois
+    extensions.lives_ok(
+      $$insert into ad_touchpoints
+          (tenant_id, wa_message_id, phone_e164, phone_match_key,
+           ctwa_clid, ad_id, source_channel, received_at, raw_payload)
+        values ('11111111-1111-1111-1111-111111111111', 'MSG_1',
+                '+5511987654321', '551187654321', 'clid_1', 'ad_1',
+                'evolution', now() - interval '2 minutes', '{}'::jsonb);
+        insert into chatwoot_conversations
+          (id, tenant_id, contact_id, phone_e164, phone_match_key, criada_em)
+        values (9001, '11111111-1111-1111-1111-111111111111', 501,
+                '+5511987654321', '551187654321', now() - interval '1 minute')$$,
+      'fixtures: touchpoint orfao e conversa correspondente'
+    ),
+    extensions.is(
+      reconciliar_orfaos(15), 1::int,
+      'reconcilia o touchpoint orfao com a conversa'
+    ),
+    extensions.is(
+      (select chatwoot_conversation_id from ad_touchpoints
+        where wa_message_id = 'MSG_1'),
+      9001::bigint,
+      'o vinculo aponta para a conversa correta'
+    ),
 
-select is(
-  reconciliar_orfaos(15), 1,
-  'reconcilia o touchpoint orfao com a conversa'
-);
-
-select is(
-  (select chatwoot_conversation_id from ad_touchpoints
-     where wa_message_id = 'MSG_1'),
-  9001::bigint,
-  'o vinculo aponta para a conversa correta'
-);
-
--- Caso 2: o mesmo lead escrito sem o nono digito no Chatwoot
-insert into ad_touchpoints
-  (tenant_id, wa_message_id, phone_e164, phone_match_key,
-   ctwa_clid, ad_id, source_channel, received_at, raw_payload)
-values
-  ('11111111-1111-1111-1111-111111111111', 'MSG_2', '+5511912345678',
-   '551112345678', 'clid_2', 'ad_2', 'evolution',
-   now() - interval '2 minutes', '{}'::jsonb);
-
-insert into chatwoot_conversations
-  (id, tenant_id, contact_id, phone_e164, phone_match_key, criada_em)
-values
-  (9002, '11111111-1111-1111-1111-111111111111', 502, '+551112345678',
-   '551112345678', now() - interval '1 minute');
-
-select is(
-  reconciliar_orfaos(15), 1,
-  'casa o lead mesmo com grafias diferentes do nono digito'
-);
-
--- Caso 3: conversa muito depois do toque nao deve casar
-insert into ad_touchpoints
-  (tenant_id, wa_message_id, phone_e164, phone_match_key,
-   ctwa_clid, ad_id, source_channel, received_at, raw_payload)
-values
-  ('11111111-1111-1111-1111-111111111111', 'MSG_3', '+5511955554444',
-   '551155554444', 'clid_3', 'ad_3', 'evolution',
-   now() - interval '5 hours', '{}'::jsonb);
-
-insert into chatwoot_conversations
-  (id, tenant_id, contact_id, phone_e164, phone_match_key, criada_em)
-values
-  (9003, '11111111-1111-1111-1111-111111111111', 503, '+5511955554444',
-   '551155554444', now());
-
-select is(
-  reconciliar_orfaos(15), 0,
-  'nao casa conversa fora da janela de tempo'
-);
-
-select * from finish();
-rollback;
+    -- Caso 2: o mesmo lead grafado sem o nono digito do outro lado
+    extensions.lives_ok(
+      $$insert into ad_touchpoints
+          (tenant_id, wa_message_id, phone_e164, phone_match_key,
+           ctwa_clid, ad_id, source_channel, received_at, raw_payload)
+        values ('11111111-1111-1111-1111-111111111111', 'MSG_2',
+                '+5511912345678', '551112345678', 'clid_2', 'ad_2',
+                'evolution', now() - interval '2 minutes', '{}'::jsonb);
+        insert into chatwoot_conversations
+          (id, tenant_id, contact_id, phone_e164, phone_match_key, criada_em)
+        values (9002, '11111111-1111-1111-1111-111111111111', 502,
+                '+551112345678', '551112345678', now() - interval '1 minute');
+        insert into ad_touchpoints
+          (tenant_id, wa_message_id, phone_e164, phone_match_key,
+           ctwa_clid, ad_id, source_channel, received_at, raw_payload)
+        values ('11111111-1111-1111-1111-111111111111', 'MSG_3',
+                '+5511955554444', '551155554444', 'clid_3', 'ad_3',
+                'evolution', now() - interval '5 hours', '{}'::jsonb);
+        insert into chatwoot_conversations
+          (id, tenant_id, contact_id, phone_e164, phone_match_key, criada_em)
+        values (9003, '11111111-1111-1111-1111-111111111111', 503,
+                '+5511955554444', '551155554444', now())$$,
+      'fixtures: grafia divergente e conversa fora da janela'
+    ),
+    -- Casa o do nono digito (1) e ignora o de 5 horas atras
+    extensions.is(
+      reconciliar_orfaos(15), 1::int,
+      'casa grafias diferentes e ignora conversa fora da janela'
+    )
+  ]) as tap
+  union all
+  select 2, * from extensions.finish()
+) t order by ord
 ```
 
 - [ ] **Passo 2: Rodar e confirmar que falha**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: FALHA com `function reconciliar_orfaos does not exist`.
@@ -1584,7 +1668,7 @@ select cron.schedule(
 - [ ] **Passo 4: Rodar e confirmar que passa**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: 4 testes passando.
@@ -1680,75 +1764,80 @@ Com mais de uma conversa na janela, vence a mais proxima no tempo."
 Criar `supabase/tests/database/04_journey.test.sql`:
 
 ```sql
-begin;
-select plan(5);
+-- Formato exigido pelo runner (scripts/run_pgtap.py): a suite inteira
+-- precisa ser UMA consulta. Fixtures entram por lives_ok, "set local" vira
+-- set_config(...) dentro de diag(), e finish() vem por union all com
+-- order by ord para rodar por ultimo. Casts explicitos em toda parte.
 
-insert into tenants (id, nome, slug)
-values ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a');
+select tap from (
+  select 1 as ord, unnest(array[
+    extensions.plan(6),
 
--- Um lead que entrou tres vezes por anuncios diferentes
-insert into ad_touchpoints
-  (tenant_id, wa_message_id, phone_e164, phone_match_key,
-   ctwa_clid, ad_id, source_channel, received_at, raw_payload)
-values
-  ('11111111-1111-1111-1111-111111111111', 'M1', '+5511987654321',
-   '551187654321', 'c1', 'ad_A', 'evolution',
-   '2026-09-01 10:00:00+00', '{}'::jsonb),
-  ('11111111-1111-1111-1111-111111111111', 'M2', '+5511987654321',
-   '551187654321', 'c2', 'ad_B', 'evolution',
-   '2026-09-01 15:00:00+00', '{}'::jsonb),
-  ('11111111-1111-1111-1111-111111111111', 'M3', '+5511987654321',
-   '551187654321', 'c3', 'ad_C', 'evolution',
-   '2026-09-10 09:00:00+00', '{}'::jsonb);
+    extensions.lives_ok(
+      $$insert into tenants (id, nome, slug) values
+          ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a')$$,
+      'fixtures: um tenant'
+    ),
+    -- Um lead que entrou tres vezes, por tres anuncios diferentes
+    extensions.lives_ok(
+      $$insert into ad_touchpoints
+          (tenant_id, wa_message_id, phone_e164, phone_match_key,
+           ctwa_clid, ad_id, source_channel, received_at, raw_payload)
+        values
+          ('11111111-1111-1111-1111-111111111111', 'M1', '+5511987654321',
+           '551187654321', 'c1', 'ad_A', 'evolution',
+           '2026-09-01 10:00:00+00', '{}'::jsonb),
+          ('11111111-1111-1111-1111-111111111111', 'M2', '+5511987654321',
+           '551187654321', 'c2', 'ad_B', 'evolution',
+           '2026-09-01 15:00:00+00', '{}'::jsonb),
+          ('11111111-1111-1111-1111-111111111111', 'M3', '+5511987654321',
+           '551187654321', 'c3', 'ad_C', 'evolution',
+           '2026-09-10 09:00:00+00', '{}'::jsonb)$$,
+      'fixtures: lead recorrente com tres toques'
+    ),
 
-select is(
-  (select total_toques::int from lead_journey
-     where phone_match_key = '551187654321'),
-  3,
-  'conta quantas vezes o lead entrou por anuncio'
-);
+    extensions.is(
+      (select total_toques::int from lead_journey
+        where phone_match_key = '551187654321'),
+      3::int,
+      'conta quantas vezes o lead entrou por anuncio'
+    ),
+    extensions.is(
+      (select primeiro_toque_em from lead_journey
+        where phone_match_key = '551187654321'),
+      '2026-09-01 10:00:00+00'::timestamptz,
+      'guarda o primeiro toque, que a sobrescrita teria perdido'
+    ),
 
-select is(
-  (select anuncios_distintos::int from lead_journey
-     where phone_match_key = '551187654321'),
-  3,
-  'conta por quantos anuncios diferentes o lead entrou'
-);
-
-select is(
-  (select primeiro_toque_em from lead_journey
-     where phone_match_key = '551187654321'),
-  '2026-09-01 10:00:00+00'::timestamptz,
-  'guarda o primeiro toque, que a sobrescrita teria perdido'
-);
-
--- Credito: venda em 12/09, janela de 7 dias -> ultimo toque dentro dela
-select is(
-  (select ad_id from ad_touchpoints
-     where id = atribuir_credito(
-       '11111111-1111-1111-1111-111111111111',
-       '551187654321', '2026-09-12 14:00:00+00'::timestamptz, 7)),
-  'ad_C',
-  'credito vai para o ultimo toque dentro da janela'
-);
-
--- Venda em 25/09: todos os toques ficaram fora da janela de 7 dias
-select is(
-  atribuir_credito(
-    '11111111-1111-1111-1111-111111111111',
-    '551187654321', '2026-09-25 14:00:00+00'::timestamptz, 7),
-  null,
-  'nao atribui credito a toque fora da janela'
-);
-
-select * from finish();
-rollback;
+    -- Credito: venda em 12/09, janela de 7 dias -> ultimo toque dentro dela
+    extensions.is(
+      (select ad_id from ad_touchpoints
+        where id = atribuir_credito(
+          '11111111-1111-1111-1111-111111111111'::uuid,
+          '551187654321'::text,
+          '2026-09-12 14:00:00+00'::timestamptz, 7)),
+      'ad_C'::text,
+      'credito vai para o ultimo toque dentro da janela'
+    ),
+    -- Venda em 25/09: todos os toques ficaram fora da janela
+    extensions.is(
+      atribuir_credito(
+        '11111111-1111-1111-1111-111111111111'::uuid,
+        '551187654321'::text,
+        '2026-09-25 14:00:00+00'::timestamptz, 7),
+      null::uuid,
+      'nao atribui credito a toque fora da janela'
+    )
+  ]) as tap
+  union all
+  select 2, * from extensions.finish()
+) t order by ord
 ```
 
 - [ ] **Passo 2: Rodar e confirmar que falha**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: FALHA com `relation "lead_journey" does not exist`.
@@ -1824,7 +1913,7 @@ devolvendo dado de todos os tenants.
 - [ ] **Passo 4: Rodar e confirmar que passa**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: 5 testes passando.
@@ -2118,7 +2207,7 @@ select cron.schedule(
 
 ```bash
 deno test --allow-net --allow-read tests/unit/
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: tudo passando.
@@ -2159,71 +2248,74 @@ der."
 Criar `supabase/tests/database/05_monitoramento.test.sql`:
 
 ```sql
-select unnest(array[
-  extensions.plan(4),
+-- Formato exigido pelo runner (scripts/run_pgtap.py): a suite inteira
+-- precisa ser UMA consulta. Fixtures entram por lives_ok, "set local" vira
+-- set_config(...) dentro de diag(), e finish() vem por union all com
+-- order by ord para rodar por ultimo. Casts explicitos em toda parte.
 
-insert into tenants (id, nome, slug)
-values ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a');
+select tap from (
+  select 1 as ord, unnest(array[
+    extensions.plan(6),
 
--- Instancia em silencio ha 3h, limite de 2h, dentro do horario comercial
-insert into evolution_instances
-  (id, tenant_id, nome_instancia, url_base, api_key,
-   ultimo_evento_em, silencio_limite_min, horario_inicio, horario_fim)
-values
-  ('aaaaaaaa-0000-0000-0000-000000000001',
-   '11111111-1111-1111-1111-111111111111', 'inst-muda',
-   'http://x', 's3cr3t', now() - interval '3 hours', 120, '00:00', '23:59');
+    extensions.lives_ok(
+      $$insert into tenants (id, nome, slug) values
+          ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a')$$,
+      'fixtures: um tenant'
+    ),
+    extensions.lives_ok(
+      $$insert into evolution_instances
+          (id, tenant_id, nome_instancia, url_base, api_key,
+           ultimo_evento_em, silencio_limite_min, horario_inicio, horario_fim)
+        values
+          -- muda ha 3h, limite 2h, dentro do horario: DEVE alertar
+          ('aaaaaaaa-0000-0000-0000-000000000001',
+           '11111111-1111-1111-1111-111111111111', 'inst-muda',
+           'http://x', 'k1', now() - interval '3 hours', 120,
+           '00:00', '23:59'),
+          -- recebeu ha 5min: nao alerta
+          ('aaaaaaaa-0000-0000-0000-000000000002',
+           '11111111-1111-1111-1111-111111111111', 'inst-viva',
+           'http://x', 'k2', now() - interval '5 minutes', 120,
+           '00:00', '23:59'),
+          -- muda, mas fora do horario comercial dela: nao alerta
+          ('aaaaaaaa-0000-0000-0000-000000000003',
+           '11111111-1111-1111-1111-111111111111', 'inst-fora-horario',
+           'http://x', 'k3', now() - interval '6 hours', 120,
+           (localtime + interval '2 hours')::time,
+           (localtime + interval '4 hours')::time)$$,
+      'fixtures: tres instancias em estados diferentes'
+    ),
 
--- Instancia saudavel, recebeu ha 5 minutos
-insert into evolution_instances
-  (id, tenant_id, nome_instancia, url_base, api_key,
-   ultimo_evento_em, silencio_limite_min, horario_inicio, horario_fim)
-values
-  ('aaaaaaaa-0000-0000-0000-000000000002',
-   '11111111-1111-1111-1111-111111111111', 'inst-viva',
-   'http://x', 's3cr3t', now() - interval '5 minutes', 120, '00:00', '23:59');
-
--- Instancia muda, mas fora do horario comercial dela
-insert into evolution_instances
-  (id, tenant_id, nome_instancia, url_base, api_key,
-   ultimo_evento_em, silencio_limite_min, horario_inicio, horario_fim)
-values
-  ('aaaaaaaa-0000-0000-0000-000000000003',
-   '11111111-1111-1111-1111-111111111111', 'inst-fora-de-horario',
-   'http://x', 's3cr3t', now() - interval '6 hours', 120,
-   (now() + interval '2 hours')::time, (now() + interval '4 hours')::time);
-
-select is(
-  checar_silencio_das_instancias(), 1,
-  'alerta apenas a instancia muda dentro do horario comercial'
-);
-
-select is(
-  (select count(*)::int from alertas where instance_id =
-     'aaaaaaaa-0000-0000-0000-000000000001'),
-  1, 'registra o alerta da instancia muda'
-);
-
-select is(
-  (select count(*)::int from alertas where instance_id =
-     'aaaaaaaa-0000-0000-0000-000000000003'),
-  0, 'nao alerta fora do horario comercial configurado'
-);
-
--- Segunda execucao nao deve duplicar o alerta ainda aberto
-select is(
-  checar_silencio_das_instancias(), 0,
-  'nao repete alerta ainda em aberto'
-);
-
-select * from finish();
-rollback;
+    extensions.is(
+      checar_silencio_das_instancias(), 1::int,
+      'alerta apenas a instancia muda dentro do horario comercial'
+    ),
+    extensions.is(
+      (select count(*)::int from alertas
+        where instance_id = 'aaaaaaaa-0000-0000-0000-000000000001'),
+      1::int, 'registra o alerta da instancia muda'
+    ),
+    extensions.is(
+      (select count(*)::int from alertas
+        where instance_id = 'aaaaaaaa-0000-0000-0000-000000000003'),
+      0::int, 'nao alerta fora do horario comercial configurado'
+    ),
+    -- Segunda execucao nao repete alerta ainda aberto: alerta repetido
+    -- vira ruido, e ruido faz ignorar o alerta que importa
+    extensions.is(
+      checar_silencio_das_instancias(), 0::int,
+      'nao repete alerta ainda em aberto'
+    )
+  ]) as tap
+  union all
+  select 2, * from extensions.finish()
+) t order by ord
 ```
 
 - [ ] **Passo 2: Rodar e confirmar que falha**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: FALHA com `function checar_silencio_das_instancias does not exist`.
@@ -2343,7 +2435,7 @@ ruído, e ruído faz o operador ignorar alerta de verdade.
 - [ ] **Passo 4: Rodar e confirmar que passa**
 
 ```bash
-supabase test db
+python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
 Esperado: 4 testes passando.
