@@ -95,3 +95,24 @@ Deno.test("sobrevive a anuncio sem ctwaClid", () => {
   assertEquals(r!.adId, "123456");
   assertEquals(r!.ctwaClid, null);
 });
+
+// ─── sourceType: separar tráfego pago de orgânico ───────────────
+
+Deno.test("expoe o sourceType para o chamador decidir", async () => {
+  const r = extrairAdReply(await fixture("conversation_ctwa_instagram"));
+  assertEquals(r!.sourceType, "ad");
+});
+
+Deno.test("resposta a post organico e identificavel pelo sourceType", () => {
+  // Quem responde a um post organico pelo botao de mensagem tambem gera
+  // externalAdReply, com sourceType 'post'. Sem distinguir, trafego
+  // organico entraria como lead pago, inflando o relatorio do cliente —
+  // e o sourceId seria id de post, quebrando o lookup na Graph API.
+  const organico = { data: { contextInfo: { externalAdReply: {
+    sourceType: "post", sourceId: "17900000000000000",
+    sourceUrl: "https://www.instagram.com/p/XYZ/",
+  } } } };
+  const r = extrairAdReply(organico);
+  assertNotEquals(r, null);            // extrai o que ha
+  assertEquals(r!.sourceType, "post"); // mas diz o que e
+});

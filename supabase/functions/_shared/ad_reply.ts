@@ -18,6 +18,16 @@ export type AdReply = {
   adId: string | null;
   sourceUrl: string | null;
   sourceApp: string | null;   // "instagram" | "facebook" — vira platform
+  /**
+   * `"ad"` para anúncio pago. Responder a um post orgânico pelo botão de
+   * mensagem também gera `externalAdReply`, com outro `sourceType` — e ali
+   * o `sourceId` é id de post, não de anúncio.
+   *
+   * A extração devolve os dois casos e expõe o tipo; quem decide o que
+   * fazer é o chamador. Filtrar aqui esconderia do chamador que existe
+   * tráfego orgânico chegando pelo mesmo caminho.
+   */
+  sourceType: string | null;
   title: string | null;
   body: string | null;
 };
@@ -82,6 +92,7 @@ export function extrairAdReply(payload: unknown): AdReply | null {
     adId: texto(no["sourceId"]),
     sourceUrl: texto(no["sourceUrl"]),
     sourceApp: derivarPlataforma(no),
+    sourceType: texto(no["sourceType"]),
     title: texto(no["title"]),
     body: texto(no["body"]),
   };

@@ -501,9 +501,10 @@ estrangeiro colidiria pessoas diferentes na mesma chave."
 
 **Interfaces:**
 - Consome: nada.
-- Produz: `type AdReply = { ctwaClid: string | null; adId: string | null;
-  sourceUrl: string | null; title: string | null; body: string | null }` e
-  `extrairAdReply(payload: unknown): AdReply | null`.
+- Produz: `type AdReply = { ctwaClid, adId, sourceUrl, sourceApp,
+  sourceType, title, body }` — todos `string | null`;
+  `extrairAdReply(payload: unknown): AdReply | null`; e
+  `derivarPlataforma(no: Record<string, unknown>): string | null`.
 
 **As fixtures já existem** — dois payloads reais, de versões e configurações
 diferentes do Evolution, em `tests/fixtures/evolution/`. Leia o `README.md`
@@ -737,7 +738,7 @@ export function extrairAdReply(payload: unknown): AdReply | null {
 deno test --allow-read tests/unit/ad_reply_test.ts
 ```
 
-Esperado: 11 testes passando.
+Esperado: 13 testes passando.
 
 - [ ] **Passo 6: Commit**
 
@@ -1217,6 +1218,17 @@ Deno.serve(async (req: Request) => {
   const anuncio = extrairAdReply(payload);
   if (!anuncio) {
     return Response.json({ ok: true, anuncio: false });
+  }
+
+  // Responder a post organico pelo botao de mensagem tambem gera
+  // externalAdReply, com sourceType diferente de "ad". Gravar isso como
+  // touchpoint inflaria a contagem de leads pagos do cliente, e o
+  // sourceId seria id de post — o lookup da Tarefa 9 falharia nele.
+  if (anuncio.sourceType !== "ad") {
+    return Response.json({
+      ok: true, anuncio: false, motivo: "organico",
+      source_type: anuncio.sourceType,
+    });
   }
 
   const jid = dados?.key?.remoteJid;
