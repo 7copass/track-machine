@@ -26,6 +26,15 @@ implicitamente.
 
 - **RLS habilitado em toda tabela com `tenant_id`.** Sem exceção. Uma tabela
   sem política é um vazamento entre clientes esperando acontecer.
+
+  > **Cuidado ao testar isso.** Este projeto Supabase tem um event trigger
+  > de plataforma (`ensure_rls` → `rls_auto_enable`) que liga RLS sozinho em
+  > toda tabela nova de `public`. Ou seja: uma asserção do tipo
+  > "`relrowsecurity` é true" passa **mesmo que a migration tenha esquecido**
+  > o `enable row level security`. O que prova alguma coisa é a asserção de
+  > comportamento — tenant A não lê dado de tenant B — verificada por mutação.
+  > E o trigger não está versionado aqui: um Postgres fora do Supabase não o
+  > teria.
 - **Dinheiro sempre em centavos, tipo `bigint`.** Nunca `float`, `real` ou
   `double precision`.
 - **`ad_touchpoints` é append-only nos campos de origem.** `UPDATE` permitido
@@ -1568,8 +1577,11 @@ create table chatwoot_configs (
   -- houver um operador so; vira armadilha silenciosa no dia em que um
   -- cliente tiver Chatwoot proprio e for cadastrado sem base_url.
   base_url    text not null default 'https://chat.leaderaperformance.com.br',
-  -- Cadastrado manualmente pelo operador no onboarding de cada cliente
-  account_id  bigint not null,
+  -- Cadastrado manualmente pelo operador no onboarding de cada cliente.
+  -- Unico porque o webhook resolve o tenant por ele com .single(): dois
+  -- cadastros iguais estourariam em producao no meio do fluxo, em vez de
+  -- serem recusados na hora do cadastro.
+  account_id  bigint not null unique,
   -- Id da caixa de entrada, que chega em data.chatwootInboxId
   inbox_id    bigint,
   token_ref   text not null,   -- referencia no Vault, nunca o token
@@ -1625,6 +1637,20 @@ tabela de configuracao nao leva as credenciais junto."
 só um trazia os ids do Chatwoot — a instância dele tinha a integração nativa
 ligada. A maioria não tem, então o touchpoint nasce órfão e precisa ser
 reconciliado aqui.
+
+> **QUESTÃO ABERTA — autenticação do webhook do Chatwoot.**
+> `capture-touchpoint` valida a `apikey` que o Evolution manda no corpo.
+> `chatwoot-events` **não valida nada**: o Chatwoot não assina o corpo e a
+> interface dele não permite cabeçalho customizado, então não há equivalente
+> direto. Hoje a única barreira é o `verify_jwt` padrão da plataforma — e
+> ele costuma ser desligado justamente para a integração funcionar.
+>
+> Sem decisão, quem descobrir a URL injeta conversa em qualquer tenant
+> chutando `account_id`, que é inteiro pequeno. O efeito é reconciliação
+> errada: um lead atribuído à conversa de outra pessoa.
+>
+> **Decidir antes do deploy.** Nenhum mecanismo foi improvisado aqui de
+> propósito.
 
 **Decisão de desenho:** o webhook do Chatwoot grava as conversas numa tabela
 local. Com isso a reconciliação vira um `JOIN` em SQL puro, sem chamada de

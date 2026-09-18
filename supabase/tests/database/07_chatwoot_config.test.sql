@@ -12,7 +12,7 @@
 
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(12),
+    extensions.plan(13),
 
     extensions.lives_ok(
       $$insert into tenants (id, nome, slug) values
@@ -96,6 +96,21 @@ select tap from (
       $$select policyname from pg_policies
          where schemaname = 'public' and tablename = 'chatwoot_configs'$$,
       'nenhuma policy: so service_role acessa'
+    ),
+
+    -- O webhook do Chatwoot resolve o tenant por account_id com .single().
+    -- Dois cadastros com o mesmo account_id fariam essa consulta estourar
+    -- em producao, no meio do fluxo. O schema tem que recusar antes.
+    -- Tenant novo porque o teste do cascade ja apagou o B. O account_id 7
+    -- e o do tenant A, que segue cadastrado: e essa colisao que o schema
+    -- tem que recusar.
+    extensions.throws_ok(
+      $$insert into tenants (id, nome, slug)
+          values ('33333333-3333-3333-3333-333333333333', 'Cliente C', 'cliente-c');
+        insert into chatwoot_configs (tenant_id, account_id, token_ref)
+          values ('33333333-3333-3333-3333-333333333333', 7, 'REF_C')$$,
+      '23505', null,
+      'duas configs nao podem apontar para o mesmo account_id'
     ),
 
     extensions.diag(set_config('role', 'authenticated', true)),
