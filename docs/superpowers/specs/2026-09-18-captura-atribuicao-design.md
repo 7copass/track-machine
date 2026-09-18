@@ -456,7 +456,16 @@ acesso a nada.
 guardam só a referência. Quem conseguir ler a tabela não leva as credenciais
 dos clientes junto.
 
-**Webhook autenticado pela apikey da instância.** O Evolution não assina o
+**Cada webhook autenticado pelo que sua origem permite.** Não há um padrão
+comum, e o desenho se dobra ao que existe em vez de fingir que há.
+
+*Chatwoot* — segredo por tenant na query string da URL. O Chatwoot não
+assina o corpo nem permite cabeçalho customizado. O segredo resolve o
+tenant (o corpo não escolhe nada, para a resposta não revelar quais contas
+existem) e a validação acontece antes de o corpo ser lido. Por tenant
+porque URL vaza em log: o raio do estrago fica em um cliente.
+
+*Evolution* — **webhook autenticado pela apikey da instância.** O Evolution não assina o
 corpo: ele envia a própria `apikey` dentro do payload. A validação compara
 essa chave com a cadastrada para aquela instância, em tempo constante.
 

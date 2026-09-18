@@ -12,7 +12,7 @@
 
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(13),
+    extensions.plan(16),
 
     extensions.lives_ok(
       $$insert into tenants (id, nome, slug) values
@@ -27,6 +27,31 @@ select tap from (
           ('11111111-1111-1111-1111-111111111111', 7, 'CHATWOOT_API_TOKEN'),
           ('22222222-2222-2222-2222-222222222222', 9, 'CHATWOOT_API_TOKEN')$$,
       'fixtures: uma configuracao para cada tenant'
+    ),
+
+    -- O Chatwoot nao assina o corpo nem permite cabecalho customizado. O
+    -- unico canal que sobra para autenticar o webhook e a query string da
+    -- URL. Por tenant, para que um vazamento de log fique contido a um
+    -- cliente em vez de abrir a plataforma toda.
+    extensions.results_eq(
+      $$select length(webhook_secret) from chatwoot_configs
+         where tenant_id = '11111111-1111-1111-1111-111111111111'$$,
+      array[64],
+      'todo tenant nasce com segredo de webhook de 256 bits'
+    ),
+    extensions.ok(
+      (select count(distinct webhook_secret)::int from chatwoot_configs) =
+      (select count(*)::int from chatwoot_configs),
+      'cada tenant tem um segredo diferente'
+    ),
+    extensions.throws_ok(
+      $$update chatwoot_configs a
+           set webhook_secret = b.webhook_secret
+          from chatwoot_configs b
+         where a.tenant_id = '11111111-1111-1111-1111-111111111111'
+           and b.tenant_id = '22222222-2222-2222-2222-222222222222'$$,
+      '23505', null,
+      'dois tenants nao podem compartilhar o mesmo segredo'
     ),
     extensions.results_eq(
       $$select base_url from chatwoot_configs

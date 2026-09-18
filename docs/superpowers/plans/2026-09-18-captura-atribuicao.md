@@ -1638,19 +1638,31 @@ só um trazia os ids do Chatwoot — a instância dele tinha a integração nati
 ligada. A maioria não tem, então o touchpoint nasce órfão e precisa ser
 reconciliado aqui.
 
-> **QUESTÃO ABERTA — autenticação do webhook do Chatwoot.**
-> `capture-touchpoint` valida a `apikey` que o Evolution manda no corpo.
-> `chatwoot-events` **não valida nada**: o Chatwoot não assina o corpo e a
-> interface dele não permite cabeçalho customizado, então não há equivalente
-> direto. Hoje a única barreira é o `verify_jwt` padrão da plataforma — e
-> ele costuma ser desligado justamente para a integração funcionar.
->
-> Sem decisão, quem descobrir a URL injeta conversa em qualquer tenant
-> chutando `account_id`, que é inteiro pequeno. O efeito é reconciliação
-> errada: um lead atribuído à conversa de outra pessoa.
->
-> **Decidir antes do deploy.** Nenhum mecanismo foi improvisado aqui de
-> propósito.
+**Autenticação: segredo por tenant na query string.** O Chatwoot não assina
+o corpo e não permite cabeçalho customizado, então não há equivalente à
+`apikey` que o Evolution manda. O canal que sobra é a URL:
+
+```
+https://<projeto>.supabase.co/functions/v1/chatwoot-events?s=<webhook_secret>
+```
+
+Três decisões dentro dessa escolha:
+
+**O segredo é por tenant, não global.** URL aparece em log de acesso e de
+proxy — é mais fraco que HMAC e não adianta fingir o contrário. O que dá
+para controlar é o raio: um segredo vazado compromete um cliente, não a
+plataforma.
+
+**O segredo resolve o tenant; o corpo não escolhe nada.** Se a busca fosse
+por `account_id` do corpo e o segredo validasse depois, a diferença entre
+404 e 401 revelaria quais contas existem.
+
+**A autenticação vem antes de ler o corpo.** Requisição sem segredo não
+chega a revelar que formato o endpoint espera.
+
+O `account_id` do corpo ainda é conferido — não como segurança, mas para
+pegar erro de configuração: URL de um cliente colada no Chatwoot de outro
+gravaria conversa no tenant errado sem nenhum sintoma.
 
 **Decisão de desenho:** o webhook do Chatwoot grava as conversas numa tabela
 local. Com isso a reconciliação vira um `JOIN` em SQL puro, sem chamada de
