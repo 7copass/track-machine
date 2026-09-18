@@ -113,7 +113,7 @@ que mora a lógica que mais erra, e função pura é a que se testa melhor.
 - Produz: tabelas `tenants`, `ad_accounts`, `evolution_instances`; função
   `current_tenant_id() returns uuid` usada por toda política RLS posterior.
 
-- [ ] **Passo 1: Confirmar acesso ao banco remoto**
+- [x] **Passo 1: Confirmar acesso ao banco remoto**
 
 Não há Docker nesta máquina, e o operador optou por trabalhar direto no
 projeto Supabase remoto — que está vazio e é ambiente de teste.
@@ -133,7 +133,7 @@ migration com erro chega ao projeto de verdade. Como o banco está vazio e é
 de teste, o risco é aceitável agora; quando houver dado de cliente, isso
 precisa mudar.
 
-- [ ] **Passo 2: Escrever o teste de isolamento que falha**
+- [x] **Passo 2: Escrever o teste de isolamento que falha**
 
 Criar `supabase/tests/database/01_rls.test.sql`:
 
@@ -192,7 +192,7 @@ devolver só o que é do tenant. Um `WHERE` apontando direto para o dado do
 outro cliente também precisa voltar vazio. É a diferença entre filtrar e
 isolar.
 
-- [ ] **Passo 3: Rodar o teste e confirmar que falha**
+- [x] **Passo 3: Rodar o teste e confirmar que falha**
 
 ```bash
 python3 scripts/run_pgtap.py supabase/tests/database/01_rls.test.sql
@@ -207,7 +207,7 @@ termina levantando exceção de propósito — a exceção desfaz as fixtures e
 devolve o relatório pela mensagem de erro. Verificado: o banco fica limpo
 depois de cada execução.
 
-- [ ] **Passo 4: Escrever as migrations**
+- [x] **Passo 4: Escrever as migrations**
 
 Primeiro, o pgTAP numa migration separada — `supabase/migrations/20260918000000_pgtap.sql`:
 
@@ -299,7 +299,7 @@ Nenhuma política para `anon`: ausência de política com RLS ligado significa
 acesso negado. As Edge Functions usam `service_role`, que contorna RLS por
 ser confiável.
 
-- [ ] **Passo 5: Aplicar a migration e rodar o teste**
+- [x] **Passo 5: Aplicar a migration e rodar o teste**
 
 ```bash
 supabase db push
@@ -308,7 +308,7 @@ python3 scripts/run_pgtap.py supabase/tests/database/01_rls.test.sql
 
 Esperado: 4 testes passando, nenhum `not ok`.
 
-- [ ] **Passo 6: Commit**
+- [x] **Passo 6: Commit**
 
 ```bash
 git add supabase/
