@@ -1,0 +1,60 @@
+{
+  "event": "messages.upsert",
+  "instance": "cliente-demo 01",
+  "data": {
+    "key": {
+      "remoteJid": "559392572839@s.whatsapp.net",
+      "fromMe": true,
+      "id": "23DFF1513A3BF590939A24D773DE45E2",
+      "senderLid": "98965307547698@lid"
+    },
+    "pushName": "Lead Anonimizado",
+    "status": "DELIVERY_ACK",
+    "message": {
+      "messageContextInfo": {
+        "deviceListMetadataVersion": 2
+      },
+      "conversation": "Olá! Vi seu anúncio sobre Ortodontia e tenho interesse"
+    },
+    "contextInfo": {
+      "conversionSource": "FB_Ads",
+      "conversionData": "QWZla3Ezdk1kZWo3QjNvaGdLX05B...TRUNCADO_NA_FIXTURE",
+      "conversionDelaySeconds": 11,
+      "externalAdReply": {
+        "title": "Saiba mais",
+        "mediaType": "VIDEO",
+        "thumbnailUrl": "https://scontent.xx.fbcdn.net/v/t15.5256-10/520165927.jpg",
+        "mediaUrl": "https://www.facebook.com/61555623900288/videos/1262992261867643/",
+        "thumbnail": "/9j/4AAQSkZJRgABAQAAAQABAAD_TRUNCADO_NA_FIXTURE",
+        "sourceType": "ad",
+        "sourceId": "120228996863460382",
+        "sourceUrl": "https://www.instagram.com/p/DMNreApgJJc/",
+        "containsAutoReply": false,
+        "renderLargerThumbnail": true,
+        "showAdAttribution": true,
+        "ctwaClid": "AfdzT_ANONIMIZADO_mesmo_formato_e_comprimento_aproximado_do_real_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+        "clickToWhatsappCall": true,
+        "sourceApp": "instagram",
+        "greetingMessageBody": "🟢 Online",
+        "wtwaAdFormat": false
+      },
+      "entryPointConversionSource": "ctwa_ad",
+      "entryPointConversionApp": "instagram",
+      "entryPointConversionDelaySeconds": 4,
+      "ctwaSignals": "all,all",
+      "ctwaPayload": "QWZla3Ezdk1kZWo3QjNvaGdLX05B...TRUNCADO_NA_FIXTURE"
+    },
+    "messageType": "conversation",
+    "messageTimestamp": 1753715996,
+    "instanceId": "27e2329e-a212-40fd-9391-ba6d07f8c9f0",
+    "source": "android",
+    "chatwootMessageId": 304328,
+    "chatwootInboxId": 17,
+    "chatwootConversationId": 4348
+  },
+  "destination": "https://exemplo/webhook",
+  "date_time": "2025-07-28T12:20:03.376Z",
+  "sender": "559391361307@s.whatsapp.net",
+  "server_url": "https://api.exemplo.com.br",
+  "apikey": "CHAVE-ANONIMIZADA-0000-0000-000000000000"
+}

@@ -217,9 +217,20 @@ create table ad_accounts (
 create table evolution_instances (
   id                   uuid primary key default gen_random_uuid(),
   tenant_id            uuid not null references tenants(id) on delete cascade,
+
+  -- UUID estavel que o Evolution manda em data.instanceId. E a chave de
+  -- lookup do webhook: o nome da instancia pode ser renomeado no painel
+  -- do Evolution e tem espaco ("ortodonto comercial 01"), o UUID nao muda.
+  evolution_instance_id uuid unique,
   nome_instancia       text not null unique,
+
   url_base             text not null,
-  webhook_secret       text not null,
+
+  -- O Evolution autentica mandando a propria apikey no corpo do webhook
+  -- (body.apikey), nao com header assinado. O operador cadastra aqui no
+  -- onboarding de cada cliente.
+  api_key              text,
+
   estado               text not null default 'desconhecido',
   ultimo_evento_em     timestamptz,
   silencio_limite_min  int not null default 120,
@@ -1257,8 +1268,11 @@ Criar `supabase/migrations/20260918000300_chatwoot_config.sql`:
 ```sql
 create table chatwoot_configs (
   tenant_id   uuid primary key references tenants(id) on delete cascade,
-  base_url    text not null,
+  base_url    text not null default 'https://chat.leaderaperformance.com.br',
+  -- Cadastrado manualmente pelo operador no onboarding de cada cliente
   account_id  bigint not null,
+  -- Id da caixa de entrada, que chega em data.chatwootInboxId
+  inbox_id    bigint,
   token_ref   text not null,   -- referencia no Vault, nunca o token
   criado_em   timestamptz not null default now()
 );
