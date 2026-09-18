@@ -7,6 +7,9 @@ token*.txt
 config/accounts.yml
 secrets/
 
+# ─── Config local do Claude Code (contém token) ─────────────
+.claude/settings.local.json
+
 # ─── Dados brutos puxados da API ────────────────────────────
 data/raw/
 data/cache/
