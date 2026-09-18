@@ -363,8 +363,10 @@ alheio tambem precisa voltar vazia."
 - Teste: `tests/unit/phone_test.ts`
 
 **Interfaces:**
-- Produz: `fromJid(jid: string): string` — extrai E.164 de um JID do WhatsApp.
-  `toMatchKey(e164: string): string` — chave de join tolerante ao nono dígito.
+- Produz: `fromJid(jid: string): string | null` — extrai E.164 de um JID do
+  WhatsApp, ou `null` se o JID não for de uma pessoa (`@lid` anônimo, grupo,
+  sem dígitos suficientes). `toMatchKey(e164: string): string` — chave de join
+  tolerante ao nono dígito brasileiro.
 
 - [ ] **Passo 1: Escrever os testes que falham**
 
@@ -462,7 +464,7 @@ export function toMatchKey(e164: string): string {
 deno test tests/unit/phone_test.ts
 ```
 
-Esperado: 8 testes passando.
+Esperado: 13 testes passando.
 
 - [ ] **Passo 5: Commit**
 
@@ -829,8 +831,14 @@ create table ad_touchpoints (
   instance_id               uuid references evolution_instances(id),
 
   wa_message_id             text not null,
-  phone_e164                text not null,
-  phone_match_key           text not null,
+
+  -- Telefone e NULO quando o JID nao for de pessoa (@lid anonimo, grupo).
+  -- A identidade do touchpoint e o clique no anuncio (ctwa_clid), nao o
+  -- telefone — o telefone e so como se liga ele ao Chatwoot. Descartar o
+  -- touchpoint nesse caso perderia o ctwa_clid, que e justamente o que a
+  -- Fatia C precisa para devolver a conversao a Meta.
+  phone_e164                text,
+  phone_match_key           text,
 
   -- Lead de verdade chega com fromMe false. Guardado para diagnostico:
   -- um payload real veio com true carregando contexto de anuncio, e vale
@@ -1137,8 +1145,19 @@ Deno.serve(async (req: Request) => {
   }
 
   // remoteJid e sempre a outra parte da conversa, com fromMe true ou
-  // false. Entao e sempre o telefone do lead.
+  // false. Entao e sempre o telefone do lead — quando for telefone.
+  //
+  // Vem null em JID @lid (identificador anonimo) ou de grupo. Nesse caso
+  // o touchpoint ainda e gravado: o ctwa_clid vale por si, e e o que a
+  // Fatia C usa para devolver a conversao a Meta. So nao havera como
+  // reconciliar com o Chatwoot, e o aviso no log deixa isso visivel.
   const e164 = fromJid(jid);
+  if (!e164) {
+    console.warn("JID sem telefone; touchpoint fica sem vinculo possivel", {
+      dominio: jid.split("@")[1] ?? "?",
+      instancia: inst.id,
+    });
+  }
   const timestamp = dados?.messageTimestamp;
   const recebidoEm = timestamp
     ? new Date(Number(timestamp) * 1000).toISOString()
@@ -1155,7 +1174,7 @@ Deno.serve(async (req: Request) => {
     instance_id: inst.id,
     wa_message_id: waMessageId,
     phone_e164: e164,
-    phone_match_key: toMatchKey(e164),
+    phone_match_key: e164 ? toMatchKey(e164) : null,
     from_me: dados?.key?.fromMe ?? null,
     ctwa_clid: anuncio.ctwaClid,
     ad_id: anuncio.adId,

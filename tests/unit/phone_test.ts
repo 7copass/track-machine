@@ -36,3 +36,35 @@ Deno.test("toMatchKey preserva numero internacional por inteiro", () => {
 Deno.test("toMatchKey preserva fixo brasileiro", () => {
   assertEquals(toMatchKey("+551133334444"), "551133334444");
 });
+
+// ─── Guardas: o que NÃO é telefone ──────────────────────────────
+// fromJid inventava numero para qualquer entrada. Cunhar E.164 falso e
+// pior que recusar: o numero entra no banco, nao casa com ninguem no
+// Chatwoot, e a atribuicao se perde sem erro nenhum.
+
+Deno.test("fromJid recusa JID do tipo @lid", () => {
+  // LID e o identificador anonimo do WhatsApp, nao um telefone. O
+  // WhatsApp esta migrando conversas para esse endereçamento, entao
+  // isto vai chegar em producao.
+  assertEquals(fromJid("98965307547698@lid"), null);
+});
+
+Deno.test("fromJid recusa JID de grupo", () => {
+  assertEquals(fromJid("120363000000000000@g.us"), null);
+});
+
+Deno.test("fromJid recusa JID sem digitos", () => {
+  assertEquals(fromJid("@s.whatsapp.net"), null);
+  assertEquals(fromJid(""), null);
+});
+
+Deno.test("fromJid recusa numero curto demais para ser telefone", () => {
+  assertEquals(fromJid("123@s.whatsapp.net"), null);
+});
+
+Deno.test("toMatchKey so remove o nono digito quando ele e mesmo um 9", () => {
+  // Movel brasileiro e 55 + DDD + 9XXXXXXXX. Sem checar o 9, um numero
+  // de 13 digitos que nao e movel perderia um digito a toa.
+  assertEquals(toMatchKey("+5511987654321"), "551187654321");   // movel: reduz
+  assertEquals(toMatchKey("+5511887654321"), "5511887654321");  // nao e 9: mantem
+});
