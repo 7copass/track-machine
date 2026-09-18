@@ -355,3 +355,26 @@ s3_region = "env(S3_REGION)"
 s3_access_key = "env(S3_ACCESS_KEY)"
 # Configures AWS_SECRET_ACCESS_KEY for S3 bucket
 s3_secret_key = "env(S3_SECRET_KEY)"
+
+# ─────────────────────────────────────────────────────────────────────
+#  Edge Functions
+# ─────────────────────────────────────────────────────────────────────
+# Os dois webhooks abaixo recebem chamadas de sistemas que NÃO mandam
+# Authorization: o Evolution e o Chatwoot. Com o verify_jwt padrão, a
+# plataforma recusaria com 401 antes do nosso código rodar.
+#
+# Desligar aqui não os deixa abertos: cada um autentica com o que sua
+# origem permite — apikey no corpo (Evolution) e segredo por tenant na
+# query string (Chatwoot). A validação é a primeira coisa que cada função
+# faz, antes de ler o corpo.
+
+[functions.capture-touchpoint]
+verify_jwt = false
+
+[functions.chatwoot-events]
+verify_jwt = false
+
+# Esta não é webhook: roda por pg_cron com a service_role_key, então o
+# verify_jwt padrão continua ligado e é justamente o que a protege.
+[functions.enrich-ad-metadata]
+verify_jwt = true
