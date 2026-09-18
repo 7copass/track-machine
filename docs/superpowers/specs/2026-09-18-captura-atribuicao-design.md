@@ -356,10 +356,13 @@ lado espera pelo outro.
 ### 8.2 Jornada do lead
 
 ```sql
-create view lead_journey as
+create view lead_journey
+with (security_invoker = true)   -- sem isto, a view devolve dado de todos
+as
 select
   tenant_id,
   phone_match_key,
+  max(phone_e164)               as phone_e164,
   count(*)                      as total_toques,
   count(distinct ad_id)         as anuncios_distintos,
   min(received_at)              as primeiro_toque_em,
@@ -383,8 +386,12 @@ Quando uma conversão é registrada, o crédito vai para o **último toque
 dentro da janela de atribuição**.
 
 - Janela padrão: **7 dias** — mesma da Meta, para os relatórios baterem
-- Configurável por tenant: ticket alto tem ciclo de decisão mais longo
+- A janela é **parâmetro da função**, não valor fixo no código
 - Toques anteriores dentro da janela ficam registrados como **assistência**
+
+> **Onde o valor por tenant fica guardado ainda não está decidido** — hoje
+> quem chama é que informa. Nenhum chamador existe antes da Fatia C, e a
+> decisão pertence a ela. Ver Q3.
 
 Como nada foi sobrescrito, o painel pode mostrar o que a Meta não mostra:
 
@@ -495,7 +502,7 @@ decisão implícita tomada no meio do código.
 |---|---|---|
 | Q1 | Taxonomia de ações do atendente no Chatwoot: o que ele marca, com quais campos, e como informa valor de compra | Início da Fatia C |
 | Q2 | Como o cliente autentica no painel, e daí o formato do claim de tenant no JWT | Início da Fatia B |
-| Q3 | Janela de atribuição padrão por vertical — 7 dias é o padrão da Meta, mas ticket alto pode pedir mais | Após 30 dias de dado real |
+| Q3 | Janela de atribuição: qual valor por vertical (7 dias é o padrão da Meta, ticket alto pode pedir mais) e **onde guardar o valor por tenant** — coluna em `tenants`, tabela de configuração, ou parâmetro do chamador | Início da Fatia C |
 
 ## 14. Critérios de conclusão
 

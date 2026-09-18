@@ -58,14 +58,20 @@ supabase/
   config.toml
   migrations/
     20260918000000_pgtap.sql                  framework de teste (só local)
-    20260918000100_fundacao_multitenant.sql   tenants, contas, instâncias, RLS
-    20260918000200_nucleo_touchpoints.sql     touchpoints append-only, conversões
-    20260918000300_chatwoot_config.sql        config do Chatwoot por tenant
-    20260918000400_reconciliacao.sql          conversas + join + cron
-    20260918000500_lead_journey.sql           jornada e regra de crédito
-    20260918000600_metadata_cache.sql         cache de anúncio da Meta
-    20260918000700_monitoramento.sql          alertas e dead man's switch
-    20260918000800_notificar_alertas.sql      entrega do alerta via pg_net
+    20260918000100_fundacao_multitenant.sql   ✅ tenants, contas, instâncias, RLS
+    20260918000200_nucleo_touchpoints.sql     ✅ touchpoints append-only, conversões
+    20260918000500_lead_journey.sql           ✅ jornada e regra de crédito
+    20260918000600_metadata_cache.sql         Tarefa 9 — cache de anúncio da Meta
+    20260918000700_chatwoot_config.sql        Tarefa 6 — config do Chatwoot por tenant
+    20260918000800_reconciliacao.sql          Tarefa 7 — conversas + join + cron
+    20260918000900_monitoramento.sql          Tarefa 10 — alertas e dead man's switch
+    20260918001000_notificar_alertas.sql      Tarefa 10 — entrega via pg_net
+
+Os números crescem na ordem de execução das tarefas, não na ordem em que o
+plano foi escrito. Migration com timestamp menor que uma já aplicada cria
+divergência entre a ordem do arquivo e a ordem real de aplicação — aqui
+seria inofensivo, porque não há dependência entre elas, mas é confusão
+gratuita num histórico que alguém vai ler depois.
   functions/
     _shared/
       phone.ts           normalização E.164 + chave de join
@@ -1330,7 +1336,7 @@ lead falso no painel de um cliente."
 **Arquivos:**
 - Criar: `supabase/functions/_shared/chatwoot.ts`
 - Modificar: `supabase/functions/capture-touchpoint/index.ts`
-- Criar: `supabase/migrations/20260918000300_chatwoot_config.sql`
+- Criar: `supabase/migrations/20260918000700_chatwoot_config.sql`
 - Teste: `tests/unit/chatwoot_test.ts`
 
 **Interfaces:**
@@ -1499,7 +1505,7 @@ export async function gravarAtributosDeOrigem(
 
 - [ ] **Passo 4: Migration da configuração do Chatwoot**
 
-Criar `supabase/migrations/20260918000300_chatwoot_config.sql`:
+Criar `supabase/migrations/20260918000700_chatwoot_config.sql`:
 
 ```sql
 create table chatwoot_configs (
@@ -1596,7 +1602,7 @@ tabela de configuracao nao leva as credenciais junto."
 
 **Arquivos:**
 - Criar: `supabase/functions/chatwoot-events/index.ts`
-- Criar: `supabase/migrations/20260918000400_reconciliacao.sql`
+- Criar: `supabase/migrations/20260918000800_reconciliacao.sql`
 - Teste: `supabase/tests/database/03_reconciliacao.test.sql`
 
 **Interfaces:**
@@ -1704,7 +1710,7 @@ Esperado: FALHA com `function reconciliar_orfaos does not exist`.
 
 - [ ] **Passo 3: Escrever a migration**
 
-Criar `supabase/migrations/20260918000400_reconciliacao.sql`:
+Criar `supabase/migrations/20260918000800_reconciliacao.sql`:
 
 ```sql
 create extension if not exists pg_cron;
@@ -2028,7 +2034,7 @@ devolvendo dado de todos os tenants.
 python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
-Esperado: 5 testes passando.
+Esperado: 8 testes passando.
 
 - [ ] **Passo 5: Commit**
 
@@ -2344,7 +2350,7 @@ der."
 ### Tarefa 10: Monitoramento das instâncias
 
 **Arquivos:**
-- Criar: `supabase/migrations/20260918000700_monitoramento.sql`
+- Criar: `supabase/migrations/20260918000900_monitoramento.sql`
 - Teste: `supabase/tests/database/05_monitoramento.test.sql`
 
 **Interfaces:**
@@ -2434,7 +2440,7 @@ Esperado: FALHA com `function checar_silencio_das_instancias does not exist`.
 
 - [ ] **Passo 3: Escrever a migration**
 
-Criar `supabase/migrations/20260918000700_monitoramento.sql`:
+Criar `supabase/migrations/20260918000900_monitoramento.sql`:
 
 ```sql
 create table alertas (
@@ -2554,7 +2560,7 @@ Esperado: 4 testes passando.
 
 - [ ] **Passo 5: Entregar o alerta**
 
-Criar `supabase/migrations/20260918000800_notificar_alertas.sql`:
+Criar `supabase/migrations/20260918001000_notificar_alertas.sql`:
 
 ```sql
 create extension if not exists pg_net;
