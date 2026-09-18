@@ -116,6 +116,19 @@ Deno.serve(async (req: Request) => {
         status: 400,
       });
     }
+    // "organico" merece log; "sem_anuncio" nao. A diferenca importa: sem
+    // anuncio e a maioria absoluta do trafego de qualquer instancia, e
+    // logar isso afogaria o resto. Ja organico significa que o WhatsApp
+    // ANEXOU contexto de origem e nos recusamos — se um anuncio de verdade
+    // cair aqui por erro de classificacao, este log e a unica pista de que
+    // um lead pago foi descartado.
+    if (linha.descartar === "organico") {
+      console.warn(
+        `Origem recusada por nao ser anuncio (sourceType=${linha.detalhe}) ` +
+          `na instancia ${inst.id}`,
+      );
+    }
+
     // Os outros dois sao o caminho da maioria do trafego, nao erro.
     // Responder ok evita que o Evolution reenfileire para sempre o que
     // nunca vai virar lead.
