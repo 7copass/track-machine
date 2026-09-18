@@ -11,7 +11,7 @@
 
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(13),
+    extensions.plan(15),
 
     -- Dois tenants: o segundo existe so para provar que nem a fila nem o
     -- cache entregam o anuncio de um cliente a outro.
@@ -101,6 +101,26 @@ select tap from (
     -- bypassrls) e devolveria a fila de todos os clientes a qualquer um
     -- que consultasse. Verificado por mutacao: desligando a flag, as duas
     -- assercoes abaixo falham.
+    -- A PK era so ad_id, global. A tabela tem tenant_id (o RLS precisa),
+    -- mas a chave nao o incluia — o schema afirmava uma unicidade que nao
+    -- correspondia ao isolamento. Na pratica ad_id da Meta e unico por
+    -- conta, mas chave incoerente e divida que cobra juros depois.
+    extensions.lives_ok(
+      $$insert into ad_metadata_cache (tenant_id, ad_id, ad_name, campaign_id)
+        values ('22222222-2222-2222-2222-222222222222', 'ad_compartilhado',
+                'Visto pelo B', 'camp_b'),
+               ('11111111-1111-1111-1111-111111111111', 'ad_compartilhado',
+                'Visto pelo A', 'camp_a')$$,
+      'o mesmo ad_id pode existir para dois tenants'
+    ),
+    extensions.results_eq(
+      $$select ad_name from ad_metadata_cache
+         where tenant_id = '11111111-1111-1111-1111-111111111111'
+           and ad_id = 'ad_compartilhado'$$,
+      array['Visto pelo A'::text],
+      'cada tenant le a propria entrada de cache do mesmo ad_id'
+    ),
+
     extensions.diag(set_config('role', 'authenticated', true)),
     extensions.diag(set_config(
       'request.jwt.claims',
@@ -116,8 +136,8 @@ select tap from (
     ),
     extensions.results_eq(
       $$select ad_id from ad_metadata_cache order by ad_id$$,
-      array['ad_em_cache'::text],
-      'tenant A le apenas o proprio cache'
+      array['ad_compartilhado'::text, 'ad_em_cache'::text],
+      'tenant A le so o proprio cache, inclusive do ad_id que o B tambem tem'
     ),
     extensions.is_empty(
       $$select * from ad_metadata_cache where ad_id = 'ad_cache_b'$$,

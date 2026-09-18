@@ -13,7 +13,19 @@
 // aviso. Versão da Graph API tem prazo de validade — quando esta sair de
 // suporte, o lookup passa a devolver null e o enriquecimento para em
 // silêncio; trocar aqui é a única mudança necessária.
-const VERSAO = "v21.0";
+/**
+ * Versão usada quando o chamador não informa outra.
+ *
+ * A versão tem prazo de validade: quando sai de suporte, a Meta recusa a
+ * chamada e o lookup passa a devolver null para sempre — o enriquecimento
+ * para sem ninguém perceber. Por isso ela é parâmetro, e quem roda na
+ * plataforma passa o valor de `META_API_VERSION`.
+ *
+ * Este módulo não lê o ambiente de propósito: assim ele continua sendo
+ * função pura de entrada→saída, testável sem permissão nenhuma, como
+ * `phone.ts` e `ad_reply.ts`.
+ */
+const VERSAO_PADRAO = "v21.0";
 
 export type AdMetadata = {
   adName: string | null;
@@ -24,20 +36,39 @@ export type AdMetadata = {
   objetivo: string | null;
 };
 
+/** Motivo da última falha, para quem chama poder contar e alertar. */
+export type FalhaMeta = "http" | "erro_api" | "rede" | null;
+
+export let ultimaFalha: FalhaMeta = null;
+
 export async function buscarMetadataDoAnuncio(
   token: string,
   adId: string,
+  versao: string = VERSAO_PADRAO,
 ): Promise<AdMetadata | null> {
+  ultimaFalha = null;
   const campos = "id,name,adset{id,name},campaign{id,name,objective}";
-  const url = `https://graph.facebook.com/${VERSAO}/${adId}` +
+  const url = `https://graph.facebook.com/${versao}/${adId}` +
     `?fields=${encodeURIComponent(campos)}&access_token=${
       encodeURIComponent(token)
     }`;
   try {
     const r = await fetch(url);
-    if (!r.ok) return null;
+    if (!r.ok) {
+      ultimaFalha = "http";
+      console.warn(`Graph API respondeu ${r.status} para o anuncio ${adId}`);
+      return null;
+    }
     const j = await r.json();
-    if (j.error) return null;
+    if (j.error) {
+      ultimaFalha = "erro_api";
+      // Codigo 190 e token expirado ou revogado: o enriquecimento para de
+      // funcionar inteiro, nao so para este anuncio.
+      console.warn(
+        `Graph API recusou o anuncio ${adId}: code=${j.error.code} ${j.error.message}`,
+      );
+      return null;
+    }
     return {
       adName: j.name ?? null,
       adsetId: j.adset?.id ?? null,

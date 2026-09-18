@@ -2156,7 +2156,15 @@ Criar `supabase/functions/_shared/meta.ts`:
  * derrubar a captura de leads, que já gravou o ad_id e enriquece depois.
  */
 
-const VERSAO = "v21.0";
+/**
+ * Versão usada quando o chamador não informa outra. Ela tem prazo de
+ * validade: quando sai de suporte, a Meta recusa a chamada e o lookup
+ * devolve null para sempre — o enriquecimento para sem ninguém perceber.
+ *
+ * Este módulo não lê o ambiente de propósito, para continuar puro e
+ * testável sem permissão, como `phone.ts` e `ad_reply.ts`.
+ */
+const VERSAO_PADRAO = "v21.0";
 
 export type AdMetadata = {
   adName: string | null;
@@ -2168,10 +2176,10 @@ export type AdMetadata = {
 };
 
 export async function buscarMetadataDoAnuncio(
-  token: string, adId: string,
+  token: string, adId: string, versao: string = VERSAO_PADRAO,
 ): Promise<AdMetadata | null> {
   const campos = "id,name,adset{id,name},campaign{id,name,objective}";
-  const url = `https://graph.facebook.com/${VERSAO}/${adId}` +
+  const url = `https://graph.facebook.com/${versao}/${adId}` +
     `?fields=${encodeURIComponent(campos)}&access_token=${encodeURIComponent(token)}`;
   try {
     const r = await fetch(url);
@@ -2197,9 +2205,15 @@ export async function buscarMetadataDoAnuncio(
 Criar `supabase/migrations/20260918000600_metadata_cache.sql`:
 
 ```sql
+-- O agendamento precisa das duas. `if not exists` mantem idempotente para
+-- as migrations de monitoramento da Tarefa 10, que dependem das mesmas.
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
 create table ad_metadata_cache (
-  ad_id          text primary key,
   tenant_id      uuid not null references tenants(id) on delete cascade,
+  ad_id          text not null,
+  primary key (tenant_id, ad_id),
   ad_name        text,
   adset_id       text,
   adset_name     text,
@@ -2223,7 +2237,9 @@ with (security_invoker = true)
 as
 select distinct t.tenant_id, t.ad_id
   from ad_touchpoints t
-  left join ad_metadata_cache c on c.ad_id = t.ad_id
+  left join ad_metadata_cache c
+    on  c.ad_id     = t.ad_id
+    and c.tenant_id = t.tenant_id   -- sem isto a chave por tenant nao serve
  where t.ad_id is not null
    and t.campaign_id is null
    and c.ad_id is null;
@@ -2310,14 +2326,21 @@ Acrescentar ao final de `20260918000600_metadata_cache.sql`:
 select cron.schedule(
   'enriquecer-metadata-de-anuncio',
   '*/10 * * * *',
-  $$select net.http_post(
+  $cron$
+    select net.http_post(
       url := current_setting('app.functions_base_url', true)
              || '/enrich-ad-metadata',
       headers := jsonb_build_object(
         'Authorization',
         'Bearer ' || current_setting('app.service_role_key', true)
       )
-    )$$
+    )
+    -- Sem esta guarda, com as settings ainda nao configuradas o
+    -- current_setting devolve NULL, a url vira NULL e o job estoura com
+    -- violacao de not-null a cada 10 minutos, para sempre. Verificado.
+    where coalesce(current_setting('app.functions_base_url', true), '') <> ''
+      and coalesce(current_setting('app.service_role_key', true), '') <> ''
+  $cron$
 );
 ```
 

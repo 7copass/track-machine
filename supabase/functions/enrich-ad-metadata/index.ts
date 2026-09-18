@@ -1,5 +1,5 @@
 import { admin } from "../_shared/db.ts";
-import { buscarMetadataDoAnuncio } from "../_shared/meta.ts";
+import { buscarMetadataDoAnuncio, ultimaFalha } from "../_shared/meta.ts";
 
 /**
  * Varre os touchpoints sem campanha resolvida e preenche a partir da Meta.
@@ -9,6 +9,9 @@ import { buscarMetadataDoAnuncio } from "../_shared/meta.ts";
  */
 Deno.serve(async () => {
   const db = admin();
+  // Ler o ambiente e responsabilidade de quem roda na plataforma, nao do
+  // modulo compartilhado — que fica puro e testavel sem permissao.
+  const versaoApi = Deno.env.get("META_API_VERSION") ?? "v21.0";
 
   const { data: pendentes } = await db
     .from("touchpoints_sem_metadata")
@@ -20,6 +23,8 @@ Deno.serve(async () => {
   }
 
   let resolvidos = 0;
+  let falhas = 0;
+  let semToken = 0;
 
   for (const linha of pendentes) {
     const { data: conta } = await db
@@ -30,13 +35,13 @@ Deno.serve(async () => {
       .single();
 
     // Sem token configurado ainda: sai sem erro, tenta no proximo ciclo
-    if (!conta?.token_ref) continue;
+    if (!conta?.token_ref) { semToken++; continue; }
 
     const token = Deno.env.get(conta.token_ref);
-    if (!token) continue;
+    if (!token) { semToken++; continue; }
 
-    const meta = await buscarMetadataDoAnuncio(token, linha.ad_id);
-    if (!meta) continue;
+    const meta = await buscarMetadataDoAnuncio(token, linha.ad_id, versaoApi);
+    if (!meta) { falhas++; continue; }
 
     await db.from("ad_metadata_cache").upsert({
       ad_id: linha.ad_id,
@@ -60,5 +65,21 @@ Deno.serve(async () => {
     resolvidos++;
   }
 
-  return Response.json({ ok: true, processados: resolvidos });
+  // Sem esta distincao, token expirado produziria "processados: 0" a cada
+  // 10 minutos, indistinguivel de "nao havia nada a fazer" — o
+  // enriquecimento pararia e ninguem saberia.
+  if (falhas > 0) {
+    console.error(
+      `Enriquecimento falhou em ${falhas} de ${pendentes.length} anuncios. ` +
+      `Ultima falha: ${ultimaFalha}`,
+    );
+  }
+
+  return Response.json({
+    ok: true,
+    processados: resolvidos,
+    falhas,
+    sem_token: semToken,
+    pendentes: pendentes.length,
+  });
 });
