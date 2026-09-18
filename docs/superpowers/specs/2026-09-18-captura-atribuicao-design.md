@@ -43,10 +43,22 @@ Ao final, para todo lead que chegar por um anúncio Click-to-WhatsApp:
 | P4 | Onboarding de cliente é manual (token, App, conta de anúncio) | Decisão do operador |
 | P5 | Campanhas de seguidores só exibem dados, sem atribuição | Decisão do operador |
 
-**Sobre P1:** o operador confirmou com certeza. O design ainda guarda o payload
-cru e extrai o campo de forma defensiva — não por dúvida sobre a afirmação, mas
-porque o protocolo do WhatsApp Web muda sem aviso e já quebrou integrações antes.
-Guardar o cru permite reprocessar o histórico quando isso acontecer.
+**Sobre P1 — verificada em 2026-09-18.** Payload real da instância confirmou o
+`ctwaClid` presente, junto com `sourceId` (ad), `sourceApp` (plataforma) e o
+`ctwaPayload` que a Conversions API pede na Fatia C.
+
+A verificação também derrubou uma suposição: o `externalAdReply` **não** fica
+sob `message`, e sim em `data.contextInfo`, irmão dele. Implementação por
+caminho fixo teria falhado em todos os casos. A extração por busca já estava
+no desenho e sobreviveu.
+
+O design segue guardando o payload cru: o protocolo do WhatsApp Web muda sem
+aviso e já quebrou integrações antes.
+
+**Descoberta adicional:** o payload traz `chatwootConversationId`,
+`chatwootInboxId` e `chatwootMessageId`. Onde o Evolution já está integrado ao
+Chatwoot, o vínculo nasce pronto e a reconciliação da Seção 8.1 vira rede de
+segurança em vez de caminho principal.
 
 ## 4. Escopo
 
@@ -117,9 +129,10 @@ create table ad_accounts (
 create table evolution_instances (
   id                uuid primary key default gen_random_uuid(),
   tenant_id         uuid not null references tenants(id) on delete cascade,
+  evolution_instance_id uuid unique,         -- data.instanceId, chave de lookup
   nome_instancia    text not null unique,    -- chega no campo "instance" do webhook
   url_base          text not null,
-  webhook_secret    text not null,           -- valida a origem do webhook
+  api_key           text,                    -- comparada com body.apikey
   estado            text not null default 'desconhecido',
   ultimo_evento_em  timestamptz,
   silencio_limite_min  int not null default 120,
@@ -415,8 +428,14 @@ acesso a nada.
 guardam só a referência. Quem conseguir ler a tabela não leva as credenciais
 dos clientes junto.
 
-**Webhooks assinados.** Cada instância tem seu `webhook_secret`. Sem
-validação, qualquer um injeta lead falso no painel de um cliente.
+**Webhook autenticado pela apikey da instância.** O Evolution não assina o
+corpo: ele envia a própria `apikey` dentro do payload. A validação compara
+essa chave com a cadastrada para aquela instância, em tempo constante.
+
+É mais fraco que HMAC — a chave viaja no corpo a cada requisição — mas é o
+que o Evolution oferece. TLS protege em trânsito e a chave é por instância,
+então um vazamento não alcança os outros clientes. Instância sem chave
+cadastrada recusa todo webhook: na dúvida, negar.
 
 ## 11. Testes
 

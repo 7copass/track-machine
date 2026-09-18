@@ -44,6 +44,7 @@ implicitamente.
 supabase/
   config.toml
   migrations/
+    20260918000000_pgtap.sql                  framework de teste (só local)
     20260918000100_fundacao_multitenant.sql   tenants, contas, instâncias, RLS
     20260918000200_nucleo_touchpoints.sql     touchpoints append-only, conversões
     20260918000300_chatwoot_config.sql        config do Chatwoot por tenant
@@ -185,15 +186,25 @@ isolar.
 supabase test db
 ```
 
-Esperado: FALHA com `relation "tenants" does not exist`.
+Esperado: FALHA. A mensagem provável é `function plan(integer) does not
+exist` — o pgTAP ainda não foi instalado, então o teste quebra já na
+primeira linha, antes de chegar em `tenants`. Qualquer uma das duas falhas
+serve; o que importa é que o teste não passa sem a implementação.
 
-- [ ] **Passo 4: Escrever a migration da fundação**
+- [ ] **Passo 4: Escrever as migrations**
 
-Criar `supabase/migrations/20260918000100_fundacao_multitenant.sql`:
+Primeiro, o pgTAP numa migration separada — `supabase/migrations/20260918000000_pgtap.sql`:
 
 ```sql
+-- pgTAP isolado numa migration propria de proposito: ele e framework de
+-- teste, e mante-lo separado permite excluir esta migration do push para
+-- producao sem mexer em nenhuma outra.
 create extension if not exists pgtap with schema extensions;
+```
 
+Depois a fundação — `supabase/migrations/20260918000100_fundacao_multitenant.sql`:
+
+```sql
 create table tenants (
   id         uuid primary key default gen_random_uuid(),
   nome       text not null,
@@ -546,6 +557,7 @@ export type AdReply = {
   ctwaClid: string | null;
   adId: string | null;
   sourceUrl: string | null;
+  sourceApp: string | null;   // "instagram" | "facebook" — vira platform
   title: string | null;
   body: string | null;
 };
@@ -589,6 +601,7 @@ export function extrairAdReply(payload: unknown): AdReply | null {
     ctwaClid: texto(no["ctwaClid"]),
     adId: texto(no["sourceId"]),
     sourceUrl: texto(no["sourceUrl"]),
+    sourceApp: texto(no["sourceApp"]),
     title: texto(no["title"]),
     body: texto(no["body"]),
   };
@@ -859,43 +872,33 @@ Criar `tests/unit/webhook_auth_test.ts`:
 
 ```typescript
 import { assertEquals } from "jsr:@std/assert";
-import { assinar, validarAssinatura } from "../../supabase/functions/_shared/webhook_auth.ts";
+import { validarApiKey } from "../../supabase/functions/_shared/webhook_auth.ts";
 
-const SEGREDO = "segredo-de-teste";
-
-function requisicao(corpo: string, assinatura?: string): Request {
-  const headers = new Headers({ "content-type": "application/json" });
-  if (assinatura) headers.set("x-track-signature", assinatura);
-  return new Request("https://exemplo/hook", {
-    method: "POST", headers, body: corpo,
-  });
-}
-
-Deno.test("aceita requisicao com assinatura correta", async () => {
-  const corpo = JSON.stringify({ event: "messages.upsert" });
-  const req = requisicao(corpo, await assinar(corpo, SEGREDO));
-  assertEquals(await validarAssinatura(req, SEGREDO), true);
+Deno.test("aceita a apikey correta", () => {
+  assertEquals(validarApiKey("CHAVE-ABC-123", "CHAVE-ABC-123"), true);
 });
 
-Deno.test("recusa requisicao sem assinatura", async () => {
-  // Sem isso, qualquer um injeta lead falso no painel de um cliente
-  const req = requisicao(JSON.stringify({ event: "messages.upsert" }));
-  assertEquals(await validarAssinatura(req, SEGREDO), false);
+Deno.test("recusa apikey de outra instancia", () => {
+  // Sem isso, o webhook de um cliente grava lead no tenant de outro
+  assertEquals(validarApiKey("CHAVE-XYZ-999", "CHAVE-ABC-123"), false);
 });
 
-Deno.test("recusa assinatura de outro segredo", async () => {
-  const corpo = JSON.stringify({ event: "messages.upsert" });
-  const req = requisicao(corpo, await assinar(corpo, "outro-segredo"));
-  assertEquals(await validarAssinatura(req, SEGREDO), false);
+Deno.test("recusa quando o webhook nao manda apikey", () => {
+  assertEquals(validarApiKey(null, "CHAVE-ABC-123"), false);
+  assertEquals(validarApiKey(undefined, "CHAVE-ABC-123"), false);
+  assertEquals(validarApiKey("", "CHAVE-ABC-123"), false);
 });
 
-Deno.test("recusa quando o corpo foi adulterado depois de assinado", async () => {
-  const original = JSON.stringify({ valor: 100 });
-  const adulterado = JSON.stringify({ valor: 999999 });
-  const req = requisicao(adulterado, await assinar(original, SEGREDO));
-  assertEquals(await validarAssinatura(req, SEGREDO), false);
+Deno.test("recusa quando a instancia ainda nao tem chave cadastrada", () => {
+  // Instancia recem-criada sem api_key nao pode aceitar qualquer webhook
+  assertEquals(validarApiKey("qualquer-coisa", null), false);
+  assertEquals(validarApiKey("qualquer-coisa", ""), false);
 });
-```
+
+Deno.test("recusa chave de tamanho diferente sem vazar o tamanho", () => {
+  assertEquals(validarApiKey("CHAVE-ABC", "CHAVE-ABC-123"), false);
+  assertEquals(validarApiKey("CHAVE-ABC-123-EXTRA", "CHAVE-ABC-123"), false);
+});
 
 - [ ] **Passo 2: Rodar e confirmar que falha**
 
@@ -911,30 +914,18 @@ Criar `supabase/functions/_shared/webhook_auth.ts`:
 
 ```typescript
 /**
- * Assinatura HMAC-SHA256 dos webhooks.
+ * Validação do webhook do Evolution.
  *
- * Sem validação, qualquer um que descubra a URL da função injeta lead
- * falso no painel de um cliente. O segredo é por instância, então um
- * vazamento não compromete as outras.
+ * O Evolution não assina o corpo: ele manda a própria apikey da instância
+ * dentro do payload (`body.apikey`). Então a validação é comparar essa
+ * chave com a que o operador cadastrou para aquela instância.
+ *
+ * É mais fraco que HMAC — a chave viaja no corpo a cada requisição — mas
+ * é o que o Evolution oferece hoje. TLS protege em trânsito, e a chave é
+ * por instância, então um vazamento não alcança os outros clientes.
  */
 
-const enc = new TextEncoder();
-
-async function chave(segredo: string): Promise<CryptoKey> {
-  return await crypto.subtle.importKey(
-    "raw", enc.encode(segredo),
-    { name: "HMAC", hash: "SHA-256" }, false, ["sign"],
-  );
-}
-
-export async function assinar(corpo: string, segredo: string): Promise<string> {
-  const buf = await crypto.subtle.sign("HMAC", await chave(segredo), enc.encode(corpo));
-  return Array.from(new Uint8Array(buf))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-/** Comparação em tempo constante: evita descobrir a assinatura por timing. */
+/** Comparação em tempo constante: não revela a chave por timing. */
 function iguais(a: string, b: string): boolean {
   if (a.length !== b.length) return false;
   let dif = 0;
@@ -942,11 +933,14 @@ function iguais(a: string, b: string): boolean {
   return dif === 0;
 }
 
-export async function validarAssinatura(req: Request, segredo: string): Promise<boolean> {
-  const recebida = req.headers.get("x-track-signature");
-  if (!recebida) return false;
-  const corpo = await req.clone().text();
-  return iguais(recebida, await assinar(corpo, segredo));
+export function validarApiKey(
+  recebida: string | null | undefined,
+  esperada: string | null | undefined,
+): boolean {
+  // Instancia sem chave cadastrada nao aceita webhook nenhum: na duvida,
+  // recusar. Aceitar seria deixar uma instancia recem-criada aberta.
+  if (!recebida || !esperada) return false;
+  return iguais(recebida, esperada);
 }
 ```
 
@@ -956,7 +950,7 @@ export async function validarAssinatura(req: Request, segredo: string): Promise<
 deno test tests/unit/webhook_auth_test.ts
 ```
 
-Esperado: 4 testes passando.
+Esperado: 5 testes passando.
 
 - [ ] **Passo 5: Implementar a função de captura**
 
@@ -979,33 +973,52 @@ Criar `supabase/functions/capture-touchpoint/index.ts`:
 
 ```typescript
 import { admin } from "../_shared/db.ts";
-import { validarAssinatura } from "../_shared/webhook_auth.ts";
+import { validarApiKey } from "../_shared/webhook_auth.ts";
 import { extrairAdReply } from "../_shared/ad_reply.ts";
 import { fromJid, toMatchKey } from "../_shared/phone.ts";
+
+/**
+ * Remove o thumbnail em base64 antes de guardar o payload.
+ * São ~6KB por lead, e a mesma imagem já está em thumbnailUrl. Guardar o
+ * base64 de cada lead infla a tabela sem acrescentar informação.
+ */
+function enxugar(payload: Record<string, unknown>): Record<string, unknown> {
+  const copia = structuredClone(payload) as any;
+  const ad = copia?.data?.contextInfo?.externalAdReply;
+  if (ad?.thumbnail) ad.thumbnail = "[removido: ver thumbnailUrl]";
+  return copia;
+}
 
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") {
     return new Response("Method Not Allowed", { status: 405 });
   }
 
-  const payload = await req.clone().json().catch(() => null);
+  const payload = await req.json().catch(() => null);
   if (!payload) return new Response("Bad Request", { status: 400 });
 
-  const nomeInstancia = payload.instance;
-  if (!nomeInstancia) return new Response("Bad Request", { status: 400 });
+  const dados = payload.data ?? {};
+  const instanciaUuid: string | null = dados.instanceId ?? null;
+  const instanciaNome: string | null = payload.instance ?? null;
+
+  if (!instanciaUuid && !instanciaNome) {
+    return new Response("Payload sem identificacao de instancia", { status: 400 });
+  }
 
   const db = admin();
 
-  const { data: inst } = await db
-    .from("evolution_instances")
-    .select("id, tenant_id, webhook_secret")
-    .eq("nome_instancia", nomeInstancia)
-    .single();
+  // Lookup pelo UUID quando existir: o nome pode ser renomeado no painel
+  // do Evolution e quebraria o vinculo silenciosamente.
+  const consulta = db.from("evolution_instances").select("id, tenant_id, api_key");
+  const { data: inst } = await (instanciaUuid
+    ? consulta.eq("evolution_instance_id", instanciaUuid)
+    : consulta.eq("nome_instancia", instanciaNome)
+  ).single();
 
-  if (!inst) return new Response("Unknown instance", { status: 404 });
+  if (!inst) return new Response("Instancia desconhecida", { status: 404 });
 
-  if (!await validarAssinatura(req, inst.webhook_secret)) {
-    return new Response("Invalid signature", { status: 401 });
+  if (!validarApiKey(payload.apikey, inst.api_key)) {
+    return new Response("Apikey invalida", { status: 401 });
   }
 
   // Marca a instancia viva ANTES de olhar se tem anuncio: mensagem
@@ -1020,17 +1033,24 @@ Deno.serve(async (req: Request) => {
     return Response.json({ ok: true, anuncio: false });
   }
 
-  const jid = payload?.data?.key?.remoteJid;
-  const waMessageId = payload?.data?.key?.id;
+  const jid = dados?.key?.remoteJid;
+  const waMessageId = dados?.key?.id;
   if (!jid || !waMessageId) {
     return new Response("Payload sem identificacao de mensagem", { status: 400 });
   }
 
+  // remoteJid e sempre a outra parte da conversa, com fromMe true ou
+  // false. Entao e sempre o telefone do lead.
   const e164 = fromJid(jid);
-  const timestamp = payload?.data?.messageTimestamp;
+  const timestamp = dados?.messageTimestamp;
   const recebidoEm = timestamp
     ? new Date(Number(timestamp) * 1000).toISOString()
     : new Date().toISOString();
+
+  // O Evolution ja integrado ao Chatwoot manda os ids no proprio payload.
+  // Quando vem, o vinculo nasce pronto e a reconciliacao nem precisa
+  // acontecer. Quando nao vem, a Tarefa 7 recupera por telefone e tempo.
+  const conversaChatwoot = dados?.chatwootConversationId ?? null;
 
   // ON CONFLICT DO NOTHING: Evolution reenvia webhook, e reenvia sempre
   const { error } = await db.from("ad_touchpoints").insert({
@@ -1041,10 +1061,12 @@ Deno.serve(async (req: Request) => {
     phone_match_key: toMatchKey(e164),
     ctwa_clid: anuncio.ctwaClid,
     ad_id: anuncio.adId,
-    platform: null,
+    platform: anuncio.sourceApp,
     source_channel: "evolution",
     received_at: recebidoEm,
-    raw_payload: payload,
+    raw_payload: enxugar(payload),
+    chatwoot_conversation_id: conversaChatwoot,
+    reconciled_at: conversaChatwoot ? new Date().toISOString() : null,
   });
 
   if (error && error.code !== "23505") {
@@ -1052,7 +1074,11 @@ Deno.serve(async (req: Request) => {
     return new Response("Erro ao gravar", { status: 500 });
   }
 
-  return Response.json({ ok: true, anuncio: true, ad_id: anuncio.adId });
+  return Response.json({
+    ok: true, anuncio: true,
+    ad_id: anuncio.adId,
+    ja_vinculado: conversaChatwoot !== null,
+  });
 });
 ```
 
@@ -2124,7 +2150,7 @@ values ('11111111-1111-1111-1111-111111111111', 'Cliente A', 'cliente-a');
 
 -- Instancia em silencio ha 3h, limite de 2h, dentro do horario comercial
 insert into evolution_instances
-  (id, tenant_id, nome_instancia, url_base, webhook_secret,
+  (id, tenant_id, nome_instancia, url_base, api_key,
    ultimo_evento_em, silencio_limite_min, horario_inicio, horario_fim)
 values
   ('aaaaaaaa-0000-0000-0000-000000000001',
@@ -2133,7 +2159,7 @@ values
 
 -- Instancia saudavel, recebeu ha 5 minutos
 insert into evolution_instances
-  (id, tenant_id, nome_instancia, url_base, webhook_secret,
+  (id, tenant_id, nome_instancia, url_base, api_key,
    ultimo_evento_em, silencio_limite_min, horario_inicio, horario_fim)
 values
   ('aaaaaaaa-0000-0000-0000-000000000002',
@@ -2142,7 +2168,7 @@ values
 
 -- Instancia muda, mas fora do horario comercial dela
 insert into evolution_instances
-  (id, tenant_id, nome_instancia, url_base, webhook_secret,
+  (id, tenant_id, nome_instancia, url_base, api_key,
    ultimo_evento_em, silencio_limite_min, horario_inicio, horario_fim)
 values
   ('aaaaaaaa-0000-0000-0000-000000000003',
