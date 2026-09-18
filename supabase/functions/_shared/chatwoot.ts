@@ -118,3 +118,40 @@ export async function gravarAtributosDeOrigem(
     return false;
   }
 }
+
+/**
+ * Converte o `created_at` do webhook num timestamp que o Postgres aceita.
+ *
+ * O Chatwoot manda epoch em segundos no payload de `conversation_created`
+ * — `agent_last_seen_at` e `contact_last_seen_at` vêm como inteiros ao lado
+ * dele. A coluna `criada_em` é `timestamptz`, e o número cru não passa:
+ * `select '1726660000'::timestamptz` devolve 22008 no banco. Repassar o
+ * valor direto faria o upsert falhar em *toda* conversa, e a reconciliação
+ * nunca teria o que casar.
+ *
+ * Valor irreconhecível vira agora em vez de erro. Conversa gravada com hora
+ * aproximada ainda reconcilia dentro da janela; conversa não gravada é lead
+ * perdido em silêncio.
+ */
+export function normalizarCriadaEm(valor: unknown): string {
+  const iso = (d: Date): string | null =>
+    Number.isNaN(d.getTime()) ? null : d.toISOString();
+
+  // Number.isFinite exclui NaN e Infinity, que viram Invalid Date. O zero
+  // passa de propósito: `valor || agora` trocaria 1970 por hoje sem aviso.
+  if (typeof valor === "number" && Number.isFinite(valor)) {
+    const r = iso(new Date(valor * 1000));
+    if (r) return r;
+  }
+
+  if (typeof valor === "string" && valor.length > 0) {
+    // Só dígitos é epoch, não ano: sem esta ramificação, um proxy que
+    // serialize tudo como texto colocaria a conversa no ano 1726660000.
+    const r = iso(
+      /^\d+$/.test(valor) ? new Date(Number(valor) * 1000) : new Date(valor),
+    );
+    if (r) return r;
+  }
+
+  return new Date().toISOString();
+}

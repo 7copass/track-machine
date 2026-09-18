@@ -2,6 +2,7 @@ import { assertEquals, assertStringIncludes } from "jsr:@std/assert";
 import {
   buscarContatoPorTelefone,
   gravarAtributosDeOrigem,
+  normalizarCriadaEm,
   ultimaFalha,
 } from "../../supabase/functions/_shared/chatwoot.ts";
 
@@ -198,4 +199,50 @@ Deno.test("chamada bem sucedida limpa a falha anterior", async () => {
     await buscarContatoPorTelefone(cfg, "+5511900000000");
     assertEquals(ultimaFalha, null);
   } finally { ok.restaurar(); }
+});
+
+// ─── Normalizacao do created_at do webhook ──────────────────────────
+//
+// O Chatwoot manda created_at como epoch em segundos no payload de
+// conversation_created -- os vizinhos agent_last_seen_at e
+// contact_last_seen_at sao inteiros tambem. A coluna criada_em e
+// timestamptz, e o Postgres recusa o numero cru: verificado no banco,
+// "select '1726660000'::timestamptz" devolve 22008 (date/time field value
+// out of range). Sem esta normalizacao o upsert do webhook falharia em
+// toda conversa e nada seria reconciliado.
+
+Deno.test("epoch em segundos vira timestamp que o Postgres aceita", () => {
+  assertEquals(normalizarCriadaEm(1726660000), "2024-09-18T11:46:40.000Z");
+});
+
+Deno.test("epoch zero nao e confundido com ausencia", () => {
+  // 0 e falsy: um "valor || agora" trocaria 1970 por hoje em silencio.
+  assertEquals(normalizarCriadaEm(0), "1970-01-01T00:00:00.000Z");
+});
+
+Deno.test("timestamp ja em texto passa sem ser reinterpretado", () => {
+  assertEquals(
+    normalizarCriadaEm("2026-09-18T10:00:00.000Z"),
+    "2026-09-18T10:00:00.000Z",
+  );
+});
+
+Deno.test("epoch entregue como texto ainda e epoch", () => {
+  // Proxy que serializa tudo como string nao pode virar ano 1726660000.
+  assertEquals(normalizarCriadaEm("1726660000"), "2024-09-18T11:46:40.000Z");
+});
+
+Deno.test("sem created_at, a conversa entra com a hora de agora", () => {
+  // Cair para agora e melhor que recusar o evento: uma conversa com hora
+  // aproximada ainda reconcilia, uma conversa nao gravada nunca.
+  const antes = Date.now();
+  const r = normalizarCriadaEm(undefined);
+  assertEquals(Number.isNaN(Date.parse(r)), false);
+  assertEquals(Date.parse(r) >= antes - 1000, true);
+});
+
+Deno.test("valor malformado nao derruba o webhook", () => {
+  for (const lixo of [null, {}, [], "ontem", "", NaN, Infinity, 1e308 * 10]) {
+    assertEquals(Number.isNaN(Date.parse(normalizarCriadaEm(lixo))), false);
+  }
 });

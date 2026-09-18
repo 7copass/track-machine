@@ -1631,7 +1631,7 @@ local. Com isso a reconciliação vira um `JOIN` em SQL puro, sem chamada de
 API. Reconciliação que depende de rede falha quando a rede falha — e falha
 justamente durante o incidente em que você mais precisa dela.
 
-- [ ] **Passo 1: Escrever o teste que falha**
+- [x] **Passo 1: Escrever o teste que falha**
 
 Criar `supabase/tests/database/03_reconciliacao.test.sql`:
 
@@ -1711,7 +1711,7 @@ select tap from (
 ) t order by ord
 ```
 
-- [ ] **Passo 2: Rodar e confirmar que falha**
+- [x] **Passo 2: Rodar e confirmar que falha**
 
 ```bash
 python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
@@ -1719,7 +1719,7 @@ python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 
 Esperado: FALHA com `function reconciliar_orfaos does not exist`.
 
-- [ ] **Passo 3: Escrever a migration**
+- [x] **Passo 3: Escrever a migration**
 
 Criar `supabase/migrations/20260918000800_reconciliacao.sql`:
 
@@ -1794,15 +1794,17 @@ select cron.schedule(
 );
 ```
 
-- [ ] **Passo 4: Rodar e confirmar que passa**
+- [x] **Passo 4: Rodar e confirmar que passa**
 
 ```bash
 python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
-Esperado: 4 testes passando.
+Esperado: 17 testes passando (69 no total). Sao 17 e nao os 6 previstos
+aqui porque a suite escrita cobriu tres coisas que este plano nao
+previa; ver "Como ficou" abaixo.
 
-- [ ] **Passo 5: Implementar o webhook do Chatwoot**
+- [x] **Passo 5: Implementar o webhook do Chatwoot**
 
 Criar `supabase/functions/chatwoot-events/index.ts`:
 
@@ -1856,7 +1858,40 @@ Deno.serve(async (req: Request) => {
 });
 ```
 
-- [ ] **Passo 6: Commit**
+**Como ficou — divergencias entre este plano e o codigo aplicado**
+
+Tres desvios, todos deliberados e cobertos por teste:
+
+1. **Chave primaria `(tenant_id, id)`, nao `id` sozinho.** Id de conversa
+   do Chatwoot e sequencial por conta, e cada tenant e uma conta dentro da
+   mesma instancia (ver `chatwoot_configs`). Com a chave global, o upsert
+   do webhook sobrescreveria a conversa de um cliente com a de outro e o
+   touchpoint do primeiro deixaria de casar, em silencio. Mesmo erro ja
+   corrigido em `ad_metadata_cache` pela migration `20260918000650`.
+
+2. **`revoke execute` de `reconciliar_orfaos` para `anon` e
+   `authenticated`.** O PostgREST publica toda funcao do schema public
+   como RPC. O RLS impede a escrita, mas nao o trabalho: sem o revoke,
+   qualquer um com a chave anon — que e publica por desenho — dispara um
+   join sobre as duas tabelas inteiras a cada requisicao.
+
+3. **`normalizarCriadaEm` em `_shared/chatwoot.ts`.** O Chatwoot manda
+   `created_at` como epoch em segundos, e a coluna e `timestamptz`.
+   Verificado no banco: `select '1726660000'::timestamptz` devolve 22008.
+   O `criada_em: evento.created_at` deste plano faria o upsert falhar em
+   toda conversa, e nada seria reconciliado.
+
+**Aberto, nao resolvido aqui:** o webhook nao tem autenticacao. O Chatwoot
+nao assina o corpo e a interface dele nao permite cabecalho customizado,
+entao nao ha equivalente ao `body.apikey` do Evolution. Hoje a protecao e o
+`verify_jwt` padrao da plataforma — `supabase/config.toml` nao tem bloco
+`[functions]` — e a funcao ainda nao esta no fluxo de deploy. Desligar o
+`verify_jwt` sem antes decidir isso abre injecao de conversa em qualquer
+tenant chutando `account_id`, que e um inteiro pequeno.
+
+---
+
+- [x] **Passo 6: Commit**
 
 ```bash
 git add supabase/
