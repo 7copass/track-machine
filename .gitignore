@@ -1,0 +1,31 @@
+# ─── SEGREDOS — NUNCA COMITAR ───────────────────────────────
+.env
+.env.*
+!.env.example
+*.token
+token*.txt
+config/accounts.yml
+secrets/
+
+# ─── Dados brutos puxados da API ────────────────────────────
+data/raw/
+data/cache/
+*.parquet
+
+# ─── Python ─────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.ipynb_checkpoints/
+.pytest_cache/
+
+# ─── Sistema ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ─── Editores ───────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
