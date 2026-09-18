@@ -273,3 +273,57 @@ Deno.test("timestamp irreconhecivel vira agora em vez de derrubar a captura", as
   assertNotEquals(r.received_at, null);
   assert(!Number.isNaN(new Date(r.received_at).getTime()));
 });
+
+// ─── Thumbnail em Buffer, não em base64 ─────────────────────────
+
+Deno.test("remove o thumbnail quando vem como Buffer serializado", () => {
+  // Capturado em producao: esta versao do Evolution manda a miniatura
+  // como Buffer virado objeto — chaves "0","1","2"... uma por byte.
+  // A fixture tinha base64 em string, e o guarda de tipo so cobria string:
+  // 32 KB por lead passavam direto.
+  const buffer: Record<string, number> = {};
+  for (let i = 0; i < 4000; i++) buffer[String(i)] = i % 256;
+
+  const p = {
+    instance: "x", apikey: "CHAVE",
+    data: {
+      instanceId: "i", messageTimestamp: 1758200000,
+      key: { remoteJid: "5511987654321@s.whatsapp.net", fromMe: false, id: "M1" },
+      message: { conversation: "oi" },
+      contextInfo: { externalAdReply: {
+        sourceType: "ad", sourceId: "123", ctwaClid: "c",
+        sourceUrl: "https://www.instagram.com/p/A/",
+        thumbnail: buffer, thumbnailUrl: "https://cdn/x.jpg",
+      } },
+    },
+  };
+
+  const r = montarTouchpoint(p, "t", "i") as any;
+  const guardado = JSON.stringify(r.raw_payload);
+  assertEquals(
+    r.raw_payload.data.contextInfo.externalAdReply.thumbnail,
+    "[removido: ver thumbnailUrl]",
+  );
+  assertEquals(guardado.length < 2000, true, `payload ficou com ${guardado.length} chars`);
+});
+
+Deno.test("remove o thumbnail em base64 tambem", () => {
+  const p = {
+    instance: "x", apikey: "CHAVE",
+    data: {
+      instanceId: "i", messageTimestamp: 1758200000,
+      key: { remoteJid: "5511987654321@s.whatsapp.net", fromMe: false, id: "M2" },
+      message: { conversation: "oi" },
+      contextInfo: { externalAdReply: {
+        sourceType: "ad", sourceId: "123", ctwaClid: "c",
+        sourceUrl: "https://www.instagram.com/p/A/",
+        thumbnail: "/9j/4AAQ".repeat(500), thumbnailUrl: "https://cdn/x.jpg",
+      } },
+    },
+  };
+  const r = montarTouchpoint(p, "t", "i") as any;
+  assertEquals(
+    r.raw_payload.data.contextInfo.externalAdReply.thumbnail,
+    "[removido: ver thumbnailUrl]",
+  );
+});

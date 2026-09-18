@@ -31,6 +31,7 @@ def main() -> int:
     ultimo_visto = None
     vistos: set[str] = set()
     silencios = 0
+    mensagens = 0
 
     while True:
         inst = consultar("""
@@ -43,10 +44,10 @@ def main() -> int:
             if ultimo_visto is None:
                 ultimo_visto = visto
             elif visto != ultimo_visto:
-                print(f"TRAFEGO: mensagem passou pelo webhook as {visto[11:19]} "
-                      f"(instancia {inst[0]['nome_instancia']} viva)", flush=True)
+                # Conta em silencio. Que o webhook funciona ja esta provado;
+                # notificar cada mensagem afogaria o unico evento que importa.
+                mensagens += 1
                 ultimo_visto = visto
-                silencios = 0
 
         tps = consultar("""
             select wa_message_id, phone_e164, ad_id, platform,
@@ -72,8 +73,9 @@ def main() -> int:
         # Marco a cada 10 minutos, para silencio total nao parecer
         # monitor morto — a diferenca entre "nada chegou" e "parei de olhar"
         if silencios % 20 == 0:
-            print(f"(sem novidade ha {silencios * INTERVALO // 60} min; "
-                  f"vigilancia ativa)", flush=True)
+            print(f"(vigilancia ativa ha {silencios * INTERVALO // 60} min — "
+                  f"{mensagens} mensagens passaram pelo webhook, "
+                  f"nenhuma de anuncio ainda)", flush=True)
 
         time.sleep(INTERVALO)
 

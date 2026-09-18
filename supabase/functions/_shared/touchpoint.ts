@@ -111,7 +111,13 @@ function enxugar(payload: Record<string, unknown>): Record<string, unknown> {
       const ad = obj["externalAdReply"];
       // Só substitui o que existe: criar o campo onde ele não estava faria
       // o payload gravado mentir sobre o que o Evolution mandou.
-      if (ehObjeto(ad) && typeof ad["thumbnail"] === "string") {
+      //
+      // Qualquer tipo, não só string. Capturado em produção: esta versão do
+      // Evolution manda a miniatura como Buffer virado objeto — chaves
+      // "0","1","2"... uma por byte. Com o guarda restrito a string, eram
+      // 32 KB por lead entrando no banco sem ninguém notar. A fixture tinha
+      // base64, e foi por isso que o teste não pegou.
+      if (ehObjeto(ad) && ad["thumbnail"] !== undefined) {
         ad["thumbnail"] = TEXTO_THUMBNAIL_REMOVIDO;
       }
       if (typeof obj["apikey"] === "string") {

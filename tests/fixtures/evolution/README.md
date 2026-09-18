@@ -7,6 +7,7 @@ Payloads reais capturados de instâncias em produção, com telefone,
 |---|---|
 | `conversation_ctwa_instagram.json` | `fromMe: true`, com IDs do Chatwoot, versão nova (tem `sourceApp`, `ctwaPayload`) |
 | `extendedtext_ctwa_sem_chatwoot.json` | `fromMe: false` (lead de verdade), sem Chatwoot, versão antiga (sem `sourceApp`) |
+| `conversation_ctwa_thumbnail_buffer.json` | `thumbnail` como **Buffer virado objeto**, não base64 — formato da instância em produção |
 
 ## O contrato observado
 
@@ -51,3 +52,12 @@ Comparação chave a chave entre os dois payloads.
    lookup na Graph API.
 4. **`fromMe` varia.** Lead de verdade chega com `false`. Em ambos os
    casos `remoteJid` é o telefone do lead.
+
+6. **`thumbnail` nem sempre é base64.** A instância em produção manda a
+   miniatura como **Buffer serializado em objeto** — chaves `"0"`, `"1"`,
+   `"2"`… uma por byte, ~32 KB de JSON por lead. Um guarda de tipo restrito
+   a `string` deixa isso passar inteiro para o banco. Trate o campo pelo
+   nome, não pelo tipo.
+
+   Foi um lead real que revelou isso: as duas primeiras fixtures tinham
+   base64, o teste passava, e em produção 32 KB entravam por lead.
