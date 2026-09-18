@@ -33,8 +33,11 @@ implicitamente.
   `reconciled_at`, `adset_id`, `campaign_id`.
 - **`raw_payload` sempre gravado**, mesmo quando a extração falhar.
 - **Idempotência por `wa_message_id`.** Evolution reenvia webhooks.
-- **Fixtures são payloads reais** capturados da instância do operador. Payload
-  inventado a partir de documentação não serve como fixture.
+- **Fixture é payload real** capturado da instância do operador; payload
+  inventado a partir de documentação não serve. Objeto sintético é permitido
+  só como **sonda estrutural** — para provar que o código não depende de
+  posição — e o teste precisa dizer isso no nome, nunca afirmando que o
+  Evolution produz aquela forma.
 - **Migrations nomeadas** `YYYYMMDDHHMMSS_descricao.sql` em `supabase/migrations/`.
 - **Sem Docker nesta máquina.** Migrations vão ao projeto remoto com
   `supabase db push`; testes rodam com `python3 scripts/run_pgtap.py <arquivo>`.
@@ -502,17 +505,29 @@ estrangeiro colidiria pessoas diferentes na mesma chave."
   sourceUrl: string | null; title: string | null; body: string | null }` e
   `extrairAdReply(payload: unknown): AdReply | null`.
 
-> **DEPENDÊNCIA DO OPERADOR:** esta tarefa precisa de 5 payloads reais
-> capturados da instância Evolution. Ver seção "Dados Necessários" ao final.
-> Payload derivado de documentação não serve — o formato real é a única
-> fonte confiável, e é justamente onde este tipo de integração quebra.
+**As fixtures já existem** — dois payloads reais, de versões e configurações
+diferentes do Evolution, em `tests/fixtures/evolution/`. Leia o `README.md`
+de lá antes de escrever qualquer teste.
 
-- [ ] **Passo 1: Salvar os payloads reais como fixtures**
+- [ ] **Passo 1: Conferir o contrato observado nas fixtures**
 
-Salvar cada payload capturado em `tests/fixtures/evolution/`, com o telefone
-substituído por `5511900000000` e o `ctwaClid` por um valor fictício de mesmo
-formato. Os cinco casos: primeira mensagem em texto, imagem, vídeo e áudio
-vindas de anúncio, e uma mensagem comum sem anúncio.
+```bash
+cat tests/fixtures/evolution/README.md
+```
+
+Duas coisas que os payloads reais estabeleceram, e que contrariam o que este
+plano supunha quando foi escrito:
+
+**O `contextInfo` fica em `data.contextInfo` nos dois**, irmão de `message`,
+mesmo com `messageType` diferente (`conversation` e `extendedTextMessage`).
+O Evolution normaliza a posição — ele não migra o campo para
+`imageMessage`/`audioMessage` conforme o tipo da resposta, como este plano
+supunha. A busca recursiva continua sendo a escolha certa, mas por outro
+motivo: proteger contra mudança futura, não contra variação já observada.
+
+**Só três campos aparecem nos dois payloads:** `conversionSource`,
+`ctwaClid` e `sourceId`. Todo o resto é opcional — `sourceApp`, por exemplo,
+existe num e não no outro.
 
 - [ ] **Passo 2: Escrever os testes que falham**
 
@@ -527,33 +542,69 @@ async function fixture(nome: string): Promise<unknown> {
   return JSON.parse(texto);
 }
 
-Deno.test("extrai de primeira mensagem em texto", async () => {
-  const r = extrairAdReply(await fixture("texto_com_anuncio"));
+// ─── Contrato real, provado pelos dois payloads capturados ──────
+
+Deno.test("extrai da fixture com messageType conversation", async () => {
+  const r = extrairAdReply(await fixture("conversation_ctwa_instagram"));
   assertNotEquals(r, null);
   assertNotEquals(r!.ctwaClid, null);
-  assertNotEquals(r!.adId, null);
+  assertEquals(r!.adId, "120228996863460382");
 });
 
-Deno.test("extrai quando o lead responde com imagem", async () => {
-  const r = extrairAdReply(await fixture("imagem_com_anuncio"));
+Deno.test("extrai da fixture com messageType extendedTextMessage", async () => {
+  const r = extrairAdReply(await fixture("extendedtext_ctwa_sem_chatwoot"));
   assertNotEquals(r, null);
   assertNotEquals(r!.ctwaClid, null);
+  assertEquals(r!.adId, "120223766489610787");
 });
 
-Deno.test("extrai quando o lead responde com video", async () => {
-  const r = extrairAdReply(await fixture("video_com_anuncio"));
-  assertNotEquals(r, null);
+Deno.test("usa sourceApp quando a versao do Evolution o envia", async () => {
+  const r = extrairAdReply(await fixture("conversation_ctwa_instagram"));
+  assertEquals(r!.sourceApp, "instagram");
 });
 
-Deno.test("extrai quando o lead responde com audio", async () => {
-  // O caso que quebra implementacao com caminho fixo: audio nao passa
-  // por extendedTextMessage
-  const r = extrairAdReply(await fixture("audio_com_anuncio"));
-  assertNotEquals(r, null);
+Deno.test("deduz a plataforma pelo sourceUrl quando sourceApp nao existe", async () => {
+  // A versao mais antiga nao manda sourceApp. Confirmado nos dois payloads.
+  const r = extrairAdReply(await fixture("extendedtext_ctwa_sem_chatwoot"));
+  assertEquals(r!.sourceApp, "instagram");
 });
+
+// ─── Sondas estruturais: objetos sintéticos, para provar que a
+//     extração não depende de posição. NÃO afirmam que o Evolution
+//     produza estas formas — nos dois payloads reais o contextInfo
+//     está sempre em data.contextInfo.
+
+Deno.test("sonda: acha o adReply aninhado sob um tipo de mensagem", () => {
+  const p = { data: { message: { imageMessage: { contextInfo: {
+    externalAdReply: { sourceId: "999", sourceType: "ad", ctwaClid: "x" },
+  } } } } };
+  assertEquals(extrairAdReply(p)!.adId, "999");
+});
+
+Deno.test("sonda: acha o adReply em profundidade maior", () => {
+  const p = { a: { b: { c: { d: { externalAdReply: { sourceId: "777" } } } } } };
+  assertEquals(extrairAdReply(p)!.adId, "777");
+});
+
+Deno.test("sonda: nao deduz plataforma pelo mediaUrl", () => {
+  // mediaUrl aponta para facebook.com mesmo em anuncio do Instagram —
+  // e so onde o video esta hospedado. Usar ele classificaria errado.
+  const p = { data: { contextInfo: { externalAdReply: {
+    sourceId: "1", sourceType: "ad",
+    sourceUrl: "https://www.instagram.com/p/ABC/",
+    mediaUrl: "https://www.facebook.com/alguem/videos/123/",
+  } } } };
+  assertEquals(extrairAdReply(p)!.sourceApp, "instagram");
+});
+
+// ─── Ausência e robustez ────────────────────────────────────────
 
 Deno.test("devolve null em mensagem sem anuncio", async () => {
-  assertEquals(extrairAdReply(await fixture("texto_sem_anuncio")), null);
+  // Mesma fixture real, com o contextInfo removido: e o que chega em
+  // toda conversa organica, que e a maioria do trafego do webhook.
+  const p = await fixture("extendedtext_ctwa_sem_chatwoot") as any;
+  delete p.data.contextInfo;
+  assertEquals(extrairAdReply(p), null);
 });
 
 Deno.test("devolve null sem estourar em payload malformado", () => {
@@ -561,6 +612,7 @@ Deno.test("devolve null sem estourar em payload malformado", () => {
   assertEquals(extrairAdReply({}), null);
   assertEquals(extrairAdReply({ data: { message: null } }), null);
   assertEquals(extrairAdReply("texto solto"), null);
+  assertEquals(extrairAdReply([1, 2, 3]), null);
 });
 
 Deno.test("nao entra em loop com referencia circular", () => {
@@ -569,34 +621,12 @@ Deno.test("nao entra em loop com referencia circular", () => {
   assertEquals(extrairAdReply(circular), null);
 });
 
-Deno.test("deduz instagram pelo sourceUrl quando sourceApp nao existe", async () => {
-  // A versao antiga do Evolution nao manda sourceApp. Confirmado nos
-  // dois payloads reais: um tem, o outro nao.
-  const r = extrairAdReply(await fixture("extendedtext_ctwa_sem_chatwoot"));
-  assertEquals(r!.sourceApp, "instagram");
-});
-
-Deno.test("nao deduz plataforma pelo mediaUrl", () => {
-  // mediaUrl aponta para facebook.com mesmo em anuncio do Instagram:
-  // e so onde o video esta hospedado. Usar ele classificaria errado.
-  const p = {
-    data: { contextInfo: { externalAdReply: {
-      sourceId: "1", sourceType: "ad",
-      sourceUrl: "https://www.instagram.com/p/ABC/",
-      mediaUrl: "https://www.facebook.com/alguem/videos/123/",
-    } } },
-  };
-  assertEquals(extrairAdReply(p)!.sourceApp, "instagram");
-});
-
 Deno.test("sobrevive a anuncio sem ctwaClid", () => {
-  // Protocolo mudou ou anuncio antigo: adId presente, clid ausente.
-  // Precisa devolver o que tem, nao descartar tudo.
-  const p = {
-    data: { message: { extendedTextMessage: { contextInfo: {
-      externalAdReply: { sourceId: "123456", sourceType: "ad" },
-    } } } },
-  };
+  // Se o protocolo mudar e o clid sumir, o adId ainda mantem o lead
+  // atribuivel a campanha, mesmo perdendo a atribuicao de clique.
+  const p = { data: { contextInfo: { externalAdReply: {
+    sourceId: "123456", sourceType: "ad",
+  } } } };
   const r = extrairAdReply(p);
   assertEquals(r!.adId, "123456");
   assertEquals(r!.ctwaClid, null);
@@ -707,7 +737,7 @@ export function extrairAdReply(payload: unknown): AdReply | null {
 deno test --allow-read tests/unit/ad_reply_test.ts
 ```
 
-Esperado: 10 testes passando.
+Esperado: 11 testes passando.
 
 - [ ] **Passo 6: Commit**
 
@@ -2583,7 +2613,7 @@ Nenhum é preciso para começar. Cada um trava a tarefa indicada.
 
 | Quando | O que | Onde encontrar |
 |---|---|---|
-| **Tarefa 3** | 5 payloads reais do Evolution: primeira mensagem de anúncio em texto, imagem, vídeo e áudio, e uma mensagem comum | Webhook da instância, ou `GET /chat/findMessages` |
+| ~~Tarefa 3~~ | ~~payloads do Evolution~~ — **já entregues**, 2 payloads reais em `tests/fixtures/evolution/` | ✅ |
 | **Tarefa 5** | URL base e API key de uma instância Evolution | Painel do Evolution |
 | **Tarefa 6** | URL do Chatwoot, `account_id`, e um `api_access_token` | Chatwoot → Perfil → Tokens de acesso |
 | **Tarefa 10** | URL de webhook para onde mandar os alertas | Sua escolha: Evolution do próprio operador, Telegram, Slack |
