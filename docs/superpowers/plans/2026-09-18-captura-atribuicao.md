@@ -40,6 +40,12 @@ implicitamente.
   `supabase db push`; testes rodam com `python3 scripts/run_pgtap.py <arquivo>`.
   Toda suíte pgTAP deve ser uma única expressão `select unnest(array[...])`,
   formato que o runner espera.
+- **Asserção só enxerga fixture se receber SQL como texto.** `results_eq`,
+  `is_empty`, `lives_ok` e `throws_ok` executam via `EXECUTE` e abrem
+  consulta nova. Já `is()` e `ok()` com subconsulta inline são planejados
+  junto com a consulta externa e leem o snapshot de **antes** das fixtures —
+  devolvendo resultado errado em silêncio. Use sempre a forma com SQL em
+  texto.
 - **Commits em português**, imperativo, explicando o porquê e não o quê.
 
 ## Estrutura de Arquivos
@@ -739,6 +745,8 @@ campanha, mesmo perdendo a atribuicao de clique."
 Criar `supabase/tests/database/02_touchpoints.test.sql`:
 
 ```sql
+-- Nucleo de touchpoints: idempotencia, append-only e isolamento.
+--
 -- Formato exigido pelo runner (scripts/run_pgtap.py): a suite inteira
 -- precisa ser UMA consulta. Fixtures entram por lives_ok, "set local" vira
 -- set_config(...) dentro de diag(), e finish() vem por union all com
@@ -746,7 +754,7 @@ Criar `supabase/tests/database/02_touchpoints.test.sql`:
 
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(7),
+    extensions.plan(11),
 
     extensions.lives_ok(
       $$insert into tenants (id, nome, slug) values
@@ -777,9 +785,14 @@ select tap from (
         on conflict (tenant_id, wa_message_id) do nothing$$,
       'reenvio do mesmo webhook nao estoura'
     ),
-    extensions.is(
-      (select count(*)::int from ad_touchpoints where wa_message_id = 'MSG_A1'),
-      1::int,
+    -- A contagem vai por results_eq, com o SQL em texto, e nao por is()
+    -- sobre uma subconsulta: subconsulta escrita direto aqui e avaliada no
+    -- snapshot da consulta externa, tirado antes de qualquer lives_ok rodar,
+    -- e enxergaria a tabela vazia. So a assercao que recebe SQL como texto
+    -- abre consulta nova e ve as fixtures.
+    extensions.results_eq(
+      $$select count(*)::int from ad_touchpoints where wa_message_id = 'MSG_A1'$$,
+      array[1::int],
       'reenvio do mesmo webhook nao duplica o lead'
     ),
 
@@ -795,6 +808,40 @@ select tap from (
            set chatwoot_contact_id = 42, reconciled_at = now()
          where wa_message_id = 'MSG_A1'$$,
       'campos de reconciliacao permanecem alteraveis'
+    ),
+
+    -- Telefone nulo: JID @lid nao e telefone, mas o touchpoint vale pelo
+    -- ctwa_clid, que e o que a Fatia C devolve a Meta.
+    extensions.lives_ok(
+      $$insert into ad_touchpoints
+          (tenant_id, wa_message_id, phone_e164, phone_match_key,
+           ctwa_clid, ad_id, source_channel, received_at, raw_payload)
+        values ('11111111-1111-1111-1111-111111111111', 'MSG_LID',
+                null, null, 'clid_lid', 'ad_9', 'evolution',
+                now(), '{}'::jsonb)$$,
+      'touchpoint sem telefone e aceito'
+    ),
+
+    -- A trava e por lista do que PODE mudar. Estes tres provam a
+    -- amplitude: nenhum deles esta entre os 5 alteraveis.
+    extensions.throws_ok(
+      $$update ad_touchpoints
+           set tenant_id = '22222222-2222-2222-2222-222222222222'
+         where wa_message_id = 'MSG_A1'$$,
+      'P0001', null,
+      'mover um lead de tenant e bloqueado'
+    ),
+    extensions.throws_ok(
+      $$update ad_touchpoints set from_me = true
+         where wa_message_id = 'MSG_A1'$$,
+      'P0001', null,
+      'coluna nova nasce protegida, sem precisar entrar em lista'
+    ),
+    extensions.throws_ok(
+      $$update ad_touchpoints set phone_match_key = 'outro'
+         where wa_message_id = 'MSG_A1'$$,
+      'P0001', null,
+      'chave de join tambem e congelada'
     ),
 
     -- Isolamento
@@ -873,12 +920,16 @@ create index on ad_touchpoints (tenant_id, reconciled_at)
 -- deixar isso a cargo da disciplina de quem escreve query e apostar.
 create or replace function bloquear_alteracao_de_origem()
 returns trigger language plpgsql as $$
+declare
+  -- Lista do que PODE mudar, nao do que nao pode. Enumerar os congelados
+  -- envelhece mal: coluna nova nasceria alteravel por esquecimento, e foi
+  -- o que quase aconteceu com from_me. Assim, coluna nova nasce protegida.
+  alteraveis constant text[] := array[
+    'chatwoot_contact_id', 'chatwoot_conversation_id', 'reconciled_at',
+    'adset_id', 'campaign_id'
+  ];
 begin
-  if (new.wa_message_id, new.phone_e164, new.ctwa_clid, new.ad_id,
-      new.received_at, new.raw_payload)
-     is distinct from
-     (old.wa_message_id, old.phone_e164, old.ctwa_clid, old.ad_id,
-      old.received_at, old.raw_payload)
+  if to_jsonb(new) - alteraveis is distinct from to_jsonb(old) - alteraveis
   then
     raise exception
       'ad_touchpoints e append-only: campos de origem nao podem mudar';
@@ -932,7 +983,7 @@ create policy tenant_le_as_proprias_conversoes on conversion_events
 python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 ```
 
-Esperado: 5 testes passando (9 no total com a Tarefa 1).
+Esperado: 11 testes passando (17 no total, somando os 6 da Tarefa 1).
 
 - [ ] **Passo 5: Commit**
 
@@ -1555,14 +1606,14 @@ select tap from (
                 '+5511987654321', '551187654321', now() - interval '1 minute')$$,
       'fixtures: touchpoint orfao e conversa correspondente'
     ),
-    extensions.is(
-      reconciliar_orfaos(15), 1::int,
+    extensions.results_eq(
+      $$select reconciliar_orfaos(15)$$, array[1],
       'reconcilia o touchpoint orfao com a conversa'
     ),
-    extensions.is(
-      (select chatwoot_conversation_id from ad_touchpoints
-        where wa_message_id = 'MSG_1'),
-      9001::bigint,
+    extensions.results_eq(
+      $$select chatwoot_conversation_id from ad_touchpoints
+         where wa_message_id = 'MSG_1'$$,
+      array[9001::bigint],
       'o vinculo aponta para a conversa correta'
     ),
 
@@ -1591,8 +1642,8 @@ select tap from (
       'fixtures: grafia divergente e conversa fora da janela'
     ),
     -- Casa o do nono digito (1) e ignora o de 5 horas atras
-    extensions.is(
-      reconciliar_orfaos(15), 1::int,
+    extensions.results_eq(
+      $$select reconciliar_orfaos(15)$$, array[1],
       'casa grafias diferentes e ignora conversa fora da janela'
     )
   ]) as tap
@@ -1815,36 +1866,36 @@ select tap from (
       'fixtures: lead recorrente com tres toques'
     ),
 
-    extensions.is(
-      (select total_toques::int from lead_journey
-        where phone_match_key = '551187654321'),
-      3::int,
+    extensions.results_eq(
+      $$select total_toques::int from lead_journey
+         where phone_match_key = '551187654321'$$,
+      array[3],
       'conta quantas vezes o lead entrou por anuncio'
     ),
-    extensions.is(
-      (select primeiro_toque_em from lead_journey
-        where phone_match_key = '551187654321'),
-      '2026-09-01 10:00:00+00'::timestamptz,
+    extensions.results_eq(
+      $$select primeiro_toque_em from lead_journey
+         where phone_match_key = '551187654321'$$,
+      array['2026-09-01 10:00:00+00'::timestamptz],
       'guarda o primeiro toque, que a sobrescrita teria perdido'
     ),
 
     -- Credito: venda em 12/09, janela de 7 dias -> ultimo toque dentro dela
-    extensions.is(
-      (select ad_id from ad_touchpoints
-        where id = atribuir_credito(
-          '11111111-1111-1111-1111-111111111111'::uuid,
-          '551187654321'::text,
-          '2026-09-12 14:00:00+00'::timestamptz, 7)),
-      'ad_C'::text,
+    extensions.results_eq(
+      $$select ad_id from ad_touchpoints
+         where id = atribuir_credito(
+           '11111111-1111-1111-1111-111111111111'::uuid,
+           '551187654321'::text,
+           '2026-09-12 14:00:00+00'::timestamptz, 7)$$,
+      array['ad_C'::text],
       'credito vai para o ultimo toque dentro da janela'
     ),
     -- Venda em 25/09: todos os toques ficaram fora da janela
-    extensions.is(
-      atribuir_credito(
-        '11111111-1111-1111-1111-111111111111'::uuid,
-        '551187654321'::text,
-        '2026-09-25 14:00:00+00'::timestamptz, 7),
-      null::uuid,
+    extensions.results_eq(
+      $$select atribuir_credito(
+           '11111111-1111-1111-1111-111111111111'::uuid,
+           '551187654321'::text,
+           '2026-09-25 14:00:00+00'::timestamptz, 7)$$,
+      array[null::uuid],
       'nao atribui credito a toque fora da janela'
     )
   ]) as tap
@@ -2305,24 +2356,24 @@ select tap from (
       'fixtures: tres instancias em estados diferentes'
     ),
 
-    extensions.is(
-      checar_silencio_das_instancias(), 1::int,
+    extensions.results_eq(
+      $$select checar_silencio_das_instancias()$$, array[1],
       'alerta apenas a instancia muda dentro do horario comercial'
     ),
-    extensions.is(
-      (select count(*)::int from alertas
-        where instance_id = 'aaaaaaaa-0000-0000-0000-000000000001'),
-      1::int, 'registra o alerta da instancia muda'
+    extensions.results_eq(
+      $$select count(*)::int from alertas
+         where instance_id = 'aaaaaaaa-0000-0000-0000-000000000001'$$,
+      array[1], 'registra o alerta da instancia muda'
     ),
-    extensions.is(
-      (select count(*)::int from alertas
-        where instance_id = 'aaaaaaaa-0000-0000-0000-000000000003'),
-      0::int, 'nao alerta fora do horario comercial configurado'
+    extensions.results_eq(
+      $$select count(*)::int from alertas
+         where instance_id = 'aaaaaaaa-0000-0000-0000-000000000003'$$,
+      array[0], 'nao alerta fora do horario comercial configurado'
     ),
     -- Segunda execucao nao repete alerta ainda aberto: alerta repetido
     -- vira ruido, e ruido faz ignorar o alerta que importa
-    extensions.is(
-      checar_silencio_das_instancias(), 0::int,
+    extensions.results_eq(
+      $$select checar_silencio_das_instancias()$$, array[0],
       'nao repete alerta ainda em aberto'
     )
   ]) as tap

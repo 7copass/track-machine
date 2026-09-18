@@ -7,7 +7,7 @@
 
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(7),
+    extensions.plan(11),
 
     extensions.lives_ok(
       $$insert into tenants (id, nome, slug) values
@@ -61,6 +61,40 @@ select tap from (
            set chatwoot_contact_id = 42, reconciled_at = now()
          where wa_message_id = 'MSG_A1'$$,
       'campos de reconciliacao permanecem alteraveis'
+    ),
+
+    -- Telefone nulo: JID @lid nao e telefone, mas o touchpoint vale pelo
+    -- ctwa_clid, que e o que a Fatia C devolve a Meta.
+    extensions.lives_ok(
+      $$insert into ad_touchpoints
+          (tenant_id, wa_message_id, phone_e164, phone_match_key,
+           ctwa_clid, ad_id, source_channel, received_at, raw_payload)
+        values ('11111111-1111-1111-1111-111111111111', 'MSG_LID',
+                null, null, 'clid_lid', 'ad_9', 'evolution',
+                now(), '{}'::jsonb)$$,
+      'touchpoint sem telefone e aceito'
+    ),
+
+    -- A trava e por lista do que PODE mudar. Estes tres provam a
+    -- amplitude: nenhum deles esta entre os 5 alteraveis.
+    extensions.throws_ok(
+      $$update ad_touchpoints
+           set tenant_id = '22222222-2222-2222-2222-222222222222'
+         where wa_message_id = 'MSG_A1'$$,
+      'P0001', null,
+      'mover um lead de tenant e bloqueado'
+    ),
+    extensions.throws_ok(
+      $$update ad_touchpoints set from_me = true
+         where wa_message_id = 'MSG_A1'$$,
+      'P0001', null,
+      'coluna nova nasce protegida, sem precisar entrar em lista'
+    ),
+    extensions.throws_ok(
+      $$update ad_touchpoints set phone_match_key = 'outro'
+         where wa_message_id = 'MSG_A1'$$,
+      'P0001', null,
+      'chave de join tambem e congelada'
     ),
 
     -- Isolamento

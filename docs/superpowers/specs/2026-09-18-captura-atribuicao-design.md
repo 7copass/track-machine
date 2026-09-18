@@ -155,8 +155,12 @@ create table ad_touchpoints (
   instance_id               uuid references evolution_instances(id),
 
   wa_message_id             text not null,      -- idempotência
-  phone_e164                text not null,
-  phone_match_key           text not null,      -- ver 6.4
+  from_me                   boolean,            -- lead real chega com false
+
+  -- Nulos quando o JID não for de pessoa (@lid anônimo, grupo). A
+  -- identidade do touchpoint é o clique no anúncio, não o telefone.
+  phone_e164                text,
+  phone_match_key           text,               -- ver 6.4
 
   ctwa_clid                 text,               -- null quando vier do Quepasa
   ad_id                     text,
@@ -186,8 +190,17 @@ create index on ad_touchpoints (tenant_id, reconciled_at)
 anúncio é uma linha nova. É isso que preserva a jornada do lead recorrente
 e permite atribuição multi-toque.
 
-Os únicos campos que recebem UPDATE são os de reconciliação
-(`chatwoot_*`, `reconciled_at`) e o enriquecimento de `adset_id`/`campaign_id`.
+Os únicos campos que recebem UPDATE são os cinco de reconciliação e
+enriquecimento: `chatwoot_contact_id`, `chatwoot_conversation_id`,
+`reconciled_at`, `adset_id` e `campaign_id`.
+
+**A trava é um trigger, e enumera o que pode mudar — não o que não pode.**
+Listar os campos congelados envelhece mal: coluna nova nasceria alterável
+por esquecimento. Com a lista invertida, coluna nova nasce protegida.
+
+Isso também fecha um buraco que passaria despercebido: sem a trava,
+`tenant_id` seria alterável, e um UPDATE moveria um lead de um cliente para
+outro — desfazendo pelo dado o isolamento que o RLS garante no acesso.
 
 ```sql
 create table conversion_events (
@@ -274,6 +287,14 @@ Por isso duas colunas:
 
 O join usa `phone_match_key`. Isso aceita as duas grafias sem perder o número
 original.
+
+**Nem todo JID é telefone.** O WhatsApp também endereça por `@lid`
+(identificador anônimo) e `@g.us` (grupo), e vem migrando conversas para o
+primeiro. A extração devolve nulo nesses casos em vez de cunhar um E.164
+inventado — número falso entraria no banco como válido, não casaria com
+contato nenhum, e a atribuição se perderia sem erro. O touchpoint ainda é
+gravado, porque o `ctwa_clid` vale por si; ele só não terá como ser
+reconciliado.
 
 ## 7. Fluxo de captura
 
