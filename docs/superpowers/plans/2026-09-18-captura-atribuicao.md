@@ -1052,7 +1052,8 @@ a taxonomia de acoes do atendente estiver definida (Q1 da spec)."
 
 **Interfaces:**
 - Consome: `fromJid`, `toMatchKey` (Tarefa 2); `extrairAdReply` (Tarefa 3);
-  tabelas da Tarefa 4.
+  tabelas da Tarefa 4; `buscarContatoPorTelefone` e `gravarAtributosDeOrigem`
+  (Tarefa 6). **Execute a Tarefa 6 antes desta.**
 - Produz: endpoint `POST /functions/v1/capture-touchpoint`;
   `validarAssinatura(req: Request, segredo: string): Promise<boolean>`.
 
@@ -1169,6 +1170,10 @@ import { admin } from "../_shared/db.ts";
 import { validarApiKey } from "../_shared/webhook_auth.ts";
 import { extrairAdReply } from "../_shared/ad_reply.ts";
 import { fromJid, toMatchKey } from "../_shared/phone.ts";
+import {
+  buscarContatoPorTelefone,
+  gravarAtributosDeOrigem,
+} from "../_shared/chatwoot.ts";
 
 /**
  * Remove o thumbnail em base64 antes de guardar o payload.
@@ -1290,6 +1295,41 @@ Deno.serve(async (req: Request) => {
     return new Response("Erro ao gravar", { status: 500 });
   }
 
+  // Enriquecimento best-effort: nunca bloqueia nem falha a resposta.
+  // Se o contato ainda nao existe no Chatwoot, a Tarefa 7 reconcilia.
+  if (e164) {
+    try {
+      const { data: cfgRow } = await db
+        .from("chatwoot_configs")
+        .select("base_url, account_id, token_ref")
+        .eq("tenant_id", inst.tenant_id)
+        .single();
+
+      if (cfgRow) {
+        const cfg = {
+          baseUrl: cfgRow.base_url,
+          accountId: Number(cfgRow.account_id),
+          token: Deno.env.get(cfgRow.token_ref) ?? "",
+        };
+        const contatoId = await buscarContatoPorTelefone(cfg, e164);
+        if (contatoId) {
+          await gravarAtributosDeOrigem(cfg, contatoId, {
+            ctwa_clid: anuncio.ctwaClid,
+            ad_id: anuncio.adId,
+            campaign_id: null,
+            veio_de_anuncio: true,
+          });
+          await db.from("ad_touchpoints")
+            .update({ chatwoot_contact_id: contatoId })
+            .eq("tenant_id", inst.tenant_id)
+            .eq("wa_message_id", waMessageId);
+        }
+      }
+    } catch (e) {
+      console.error("Enriquecimento falhou; reconciliacao recupera", e);
+    }
+  }
+
   return Response.json({
     ok: true, anuncio: true,
     ad_id: anuncio.adId,
@@ -1335,9 +1375,12 @@ lead falso no painel de um cliente."
 
 **Arquivos:**
 - Criar: `supabase/functions/_shared/chatwoot.ts`
-- Modificar: `supabase/functions/capture-touchpoint/index.ts`
 - Criar: `supabase/migrations/20260918000700_chatwoot_config.sql`
 - Teste: `tests/unit/chatwoot_test.ts`
+
+> A ligação com a função de captura **não acontece aqui**: ela vive em
+> `capture-touchpoint/index.ts`, que a Tarefa 5 cria. O código está lá, no
+> Passo 5 daquela tarefa.
 
 **Interfaces:**
 - Consome: `ad_touchpoints` (Tarefa 4), `AdReply` (Tarefa 3).
@@ -1345,8 +1388,10 @@ lead falso no painel de um cliente."
   `gravarAtributosDeOrigem(cfg, contatoId, origem): Promise<boolean>`,
   tipo `ChatwootConfig = { baseUrl: string; accountId: number; token: string }`.
 
-> **DEPENDÊNCIA DO OPERADOR:** esta tarefa precisa da URL do Chatwoot, do
-> `account_id` e de um `api_access_token`. Ver "Dados Necessários".
+> **Esta tarefa roda sem credencial.** Todos os testes usam `fetch` mockado.
+> A URL e o token do Chatwoot já estão no `.env`; o `account_id` de cada
+> cliente é cadastrado pelo operador no onboarding, e só faz falta quando
+> houver um tenant real configurado.
 
 - [ ] **Passo 1: Escrever os testes que falham**
 
@@ -1524,53 +1569,7 @@ alter table chatwoot_configs enable row level security;
 -- e dado que o cliente precise ler no painel.
 ```
 
-- [ ] **Passo 5: Ligar o enriquecimento à captura**
-
-Em `supabase/functions/capture-touchpoint/index.ts`, antes do `return`
-final, acrescentar:
-
-```typescript
-  // Enriquecimento best-effort: nunca bloqueia nem falha a resposta.
-  // Se o contato ainda nao existe no Chatwoot, a Tarefa 7 reconcilia.
-  try {
-    const { data: cfgRow } = await db
-      .from("chatwoot_configs")
-      .select("base_url, account_id, token_ref")
-      .eq("tenant_id", inst.tenant_id)
-      .single();
-
-    if (cfgRow) {
-      const cfg = {
-        baseUrl: cfgRow.base_url,
-        accountId: Number(cfgRow.account_id),
-        token: Deno.env.get(cfgRow.token_ref) ?? "",
-      };
-      const contatoId = await buscarContatoPorTelefone(cfg, e164);
-      if (contatoId) {
-        await gravarAtributosDeOrigem(cfg, contatoId, {
-          ctwa_clid: anuncio.ctwaClid,
-          ad_id: anuncio.adId,
-          campaign_id: null,
-          veio_de_anuncio: true,
-        });
-        await db.from("ad_touchpoints")
-          .update({ chatwoot_contact_id: contatoId })
-          .eq("tenant_id", inst.tenant_id)
-          .eq("wa_message_id", waMessageId);
-      }
-    }
-  } catch (e) {
-    console.error("Enriquecimento falhou, reconciliacao recupera", e);
-  }
-```
-
-E o import no topo do arquivo:
-
-```typescript
-import { buscarContatoPorTelefone, gravarAtributosDeOrigem } from "../_shared/chatwoot.ts";
-```
-
-- [ ] **Passo 6: Rodar todos os testes**
+- [ ] **Passo 5: Rodar todos os testes**
 
 ```bash
 deno test --allow-net --allow-read tests/unit/
@@ -1579,7 +1578,7 @@ python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 
 Esperado: tudo passando.
 
-- [ ] **Passo 7: Commit**
+- [ ] **Passo 6: Commit**
 
 ```bash
 git add supabase/ tests/unit/chatwoot_test.ts
