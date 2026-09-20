@@ -385,3 +385,59 @@ Deno.test("fecharExecucao reclama em vez de engolir quando o update falha", asyn
   assertStringIncludes(ditos[0], "42");
   assertStringIncludes(ditos[0], "connection reset");
 });
+
+// ─── Duplicata no mesmo lote ────────────────────────────────────
+
+Deno.test("linha repetida identica no lote nao derruba a gravacao", async () => {
+  // A paginacao da Meta as vezes devolve a mesma linha em duas paginas.
+  // Sao a MESMA linha, com os mesmos valores — mandar as duas faz o
+  // Postgres recusar o lote inteiro com 21000 ("cannot affect row a second
+  // time") e perder todas as outras junto. Aqui e seguro colapsar.
+  const { db, chamadas } = dbFalso();
+  const l: LinhaInsight = {
+    ad_id: "1", dia: "2026-09-18", gasto_centavos: 34000,
+    impressoes: 12000, alcance: 8400, cliques: 512, cliques_link: 340,
+    acoes: {},
+  };
+  const n = await gravarBase(db as unknown as SupabaseClient, "t", [l, { ...l }]);
+  assertEquals(n, 1);
+  assertEquals((chamadas[0].linhas as unknown[]).length, 1);
+});
+
+Deno.test("linha repetida com valores diferentes falha nomeando a chave", async () => {
+  // Aqui NAO e seguro colapsar: as duas linhas dizem gastos diferentes
+  // para a mesma chave. Ficar com uma subestima ou superestima o gasto em
+  // silencio — o mesmo pecado que o "truncado" da Tarefa 4 existe para
+  // evitar. Falhar nomeando a chave da ao operador onde olhar.
+  const { db } = dbFalso();
+  const base: LinhaInsight = {
+    ad_id: "1", dia: "2026-09-18", gasto_centavos: 34000,
+    impressoes: 12000, alcance: 8400, cliques: 512, cliques_link: 340,
+    acoes: {},
+  };
+  const e = await assertRejects(
+    () => gravarBase(db as unknown as SupabaseClient, "t",
+                     [base, { ...base, gasto_centavos: 99999 }]),
+    Error,
+  );
+  assertStringIncludes(e.message, "1");
+  assertStringIncludes(e.message, "2026-09-18");
+});
+
+Deno.test("recorte sem campo de breakdown colide e e recusado", async () => {
+  // meta_insights.ts monta a chave com String(bruto["age"] ?? ""), entao
+  // duas linhas sem os campos de breakdown viram a MESMA chave vazia com
+  // gastos diferentes. Sem esta guarda, o lote inteiro morre com erro
+  // criptico do Postgres e todos os recortes da conta se perdem.
+  const { db } = dbFalso();
+  const r: LinhaRecorte = {
+    ad_id: "1", dia: "2026-09-18", chave: { idade: "", genero: "" },
+    gasto_centavos: 100, impressoes: 10, alcance: 8, cliques: 2, acoes: {},
+  };
+  const e = await assertRejects(
+    () => gravarRecortes(db as unknown as SupabaseClient, "t", "demografia",
+                         [r, { ...r, gasto_centavos: 200 }]),
+    Error,
+  );
+  assertStringIncludes(e.message, "demografia");
+});

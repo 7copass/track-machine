@@ -1345,6 +1345,7 @@ fica igual ao de nao haver nada a buscar."
   tabelas da Tarefa 1.
 - Produz: `podeRodarManual(ultimaEm: string | null, agora?: Date):
   { pode: boolean; faltamSegundos: number }`,
+  `semDuplicatas<T>(linhas: T[], chaveDe: (l: T) => string, rotulo: string): T[]`,
   `abrirExecucao(db, opts): Promise<number>`,
   `fecharExecucao(db, id, opts): Promise<void>`,
   `gravarBase(db, tenantId, linhas): Promise<number>`,
@@ -1485,14 +1486,59 @@ export async function fecharExecucao(
   }).eq("id", id);
 }
 
+/**
+ * Colapsa linhas repetidas do lote, ou falha se elas discordarem.
+ *
+ * O Postgres recusa `ON CONFLICT DO UPDATE` quando duas linhas do MESMO
+ * comando batem na mesma chave — SQLSTATE 21000 — e derruba o lote
+ * inteiro, perdendo todas as outras junto. Verificado no banco.
+ *
+ * Os dois casos que levam a isso pedem tratamentos opostos:
+ *
+ * - **Valores iguais**: a paginação da Meta devolveu a mesma linha em duas
+ *   páginas. Colapsar é seguro; são a mesma linha.
+ * - **Valores diferentes**: duas linhas afirmam gastos distintos para a
+ *   mesma chave — tipicamente recorte cuja resposta veio sem os campos de
+ *   breakdown, colapsando todas na chave vazia, porque `meta_insights.ts`
+ *   monta a chave com `String(bruto["age"] ?? "")`. Ficar com uma
+ *   falsearia o gasto em silêncio.
+ */
+function semDuplicatas<T>(
+  linhas: T[],
+  chaveDe: (l: T) => string,
+  rotulo: string,
+): T[] {
+  const porChave = new Map<string, T>();
+
+  for (const linha of linhas) {
+    const k = chaveDe(linha);
+    const anterior = porChave.get(k);
+
+    if (anterior === undefined) {
+      porChave.set(k, linha);
+      continue;
+    }
+    if (JSON.stringify(anterior) === JSON.stringify(linha)) continue;
+
+    throw new Error(
+      `Lote de ${rotulo} tem duas linhas diferentes para a mesma chave ` +
+        `(${k}). Gravar uma delas falsearia o gasto; corrija a origem.`,
+    );
+  }
+
+  return [...porChave.values()];
+}
+
 /** Grava o grão base. Upsert porque a Meta reescreve o passado. */
 export async function gravarBase(
   db: SupabaseClient, tenantId: string, linhas: LinhaInsight[],
 ): Promise<number> {
   if (linhas.length === 0) return 0;
 
+  const unicas = semDuplicatas(linhas, (l) => `${l.ad_id}|${l.dia}`, "insights");
+
   const { error } = await db.from("meta_insights_diario").upsert(
-    linhas.map((l) => ({
+    unicas.map((l) => ({
       tenant_id: tenantId,
       ad_id: l.ad_id,
       dia: l.dia,
@@ -1508,7 +1554,7 @@ export async function gravarBase(
   );
 
   if (error) throw new Error(`Falha ao gravar insights: ${error.message}`);
-  return linhas.length;
+  return unicas.length;
 }
 
 export async function gravarRecortes(
@@ -1519,8 +1565,17 @@ export async function gravarRecortes(
 ): Promise<number> {
   if (linhas.length === 0) return 0;
 
+  const unicas = semDuplicatas(
+    linhas,
+    (l) => `${l.ad_id}|${l.dia}|${JSON.stringify(l.chave)}`,
+    tipo,
+  );
+
+  // Sem `cliques_link`: essa coluna existe no grao base e NAO nesta tabela.
+  // Mandada aqui, o PostgREST recusa o lote inteiro com PGRST204 e todos os
+  // recortes da conta se perdem.
   const { error } = await db.from("meta_insights_recorte").upsert(
-    linhas.map((l) => ({
+    unicas.map((l) => ({
       tenant_id: tenantId,
       ad_id: l.ad_id,
       dia: l.dia,
@@ -1537,7 +1592,7 @@ export async function gravarRecortes(
   );
 
   if (error) throw new Error(`Falha ao gravar recortes: ${error.message}`);
-  return linhas.length;
+  return unicas.length;
 }
 ```
 
@@ -1548,6 +1603,20 @@ deno test tests/unit/insights_store_test.ts
 ```
 
 Esperado: 6 testes passando.
+
+> **Os 6 testes acima cobrem pouco.** Medido por mutação ao executar esta
+> tarefa: das 23 mutações aplicadas ao módulo, eles matam **2** — o valor do
+> intervalo e a fronteira `>=`. Sobrevivem a eles, entre outras:
+> `Math.ceil` virando `floor` (o operador leria "faltam 0 segundos" com o
+> botão ainda recusando), o relógio padrão trocado por outro (nenhum dos 6
+> exercita o `agora` padrão com data válida, e é assim que a Tarefa 6
+> chama), e qualquer mutação em `gravarBase`/`gravarRecortes`, que não têm
+> teste nenhum aqui.
+>
+> Vale acrescentar: o formato real do `timestamptz` que o PostgREST devolve
+> (com microssegundos, não `"...Z"` redondo), data válida no futuro — que
+> `Number.isFinite` não pega e travaria o botão por anos — e um dublê de
+> cliente conferindo que os nomes de coluna batem com a migration.
 
 - [ ] **Passo 5: Commit**
 

@@ -79,6 +79,50 @@ export function podeRodarManual(
   };
 }
 
+
+/**
+ * Colapsa linhas repetidas do lote, ou falha se elas discordarem.
+ *
+ * O Postgres recusa `ON CONFLICT DO UPDATE` quando duas linhas do MESMO
+ * comando batem na mesma chave — SQLSTATE 21000, "cannot affect row a
+ * second time" — e derruba o lote inteiro, perdendo todas as outras junto.
+ *
+ * Os dois casos que levam a isso pedem tratamentos opostos:
+ *
+ * - **Valores iguais**: a paginação da Meta devolveu a mesma linha em duas
+ *   páginas. Colapsar é seguro; são a mesma linha.
+ * - **Valores diferentes**: duas linhas afirmam gastos distintos para a
+ *   mesma chave — tipicamente recorte cuja resposta veio sem os campos de
+ *   breakdown, colapsando todas na chave vazia. Ficar com uma subestima ou
+ *   superestima o gasto em silêncio, que é o pecado que o `"truncado"` da
+ *   busca existe para evitar. Falha nomeando a chave.
+ */
+function semDuplicatas<T>(
+  linhas: T[],
+  chaveDe: (l: T) => string,
+  rotulo: string,
+): T[] {
+  const porChave = new Map<string, T>();
+
+  for (const linha of linhas) {
+    const k = chaveDe(linha);
+    const anterior = porChave.get(k);
+
+    if (anterior === undefined) {
+      porChave.set(k, linha);
+      continue;
+    }
+    if (JSON.stringify(anterior) === JSON.stringify(linha)) continue;
+
+    throw new Error(
+      `Lote de ${rotulo} tem duas linhas diferentes para a mesma chave ` +
+        `(${k}). Gravar uma delas falsearia o gasto; corrija a origem.`,
+    );
+  }
+
+  return [...porChave.values()];
+}
+
 export async function abrirExecucao(
   db: SupabaseClient,
   opts: {
@@ -147,8 +191,14 @@ export async function gravarBase(
   // existe.
   const agora = new Date().toISOString();
 
+  const unicas = semDuplicatas(
+    linhas,
+    (l) => `${l.ad_id}|${l.dia}`,
+    "insights",
+  );
+
   const { error } = await db.from("meta_insights_diario").upsert(
-    linhas.map((l) => ({
+    unicas.map((l) => ({
       tenant_id: tenantId,
       ad_id: l.ad_id,
       dia: l.dia,
@@ -166,7 +216,7 @@ export async function gravarBase(
   );
 
   if (error) throw new Error(`Falha ao gravar insights: ${error.message}`);
-  return linhas.length;
+  return unicas.length;
 }
 
 export async function gravarRecortes(
@@ -179,11 +229,17 @@ export async function gravarRecortes(
 
   const agora = new Date().toISOString();
 
+  const unicas = semDuplicatas(
+    linhas,
+    (l) => `${l.ad_id}|${l.dia}|${JSON.stringify(l.chave)}`,
+    tipo,
+  );
+
   // Sem `cliques_link`: essa coluna existe no grão base e não nesta tabela.
   // Mandada aqui, o PostgREST recusa o lote inteiro e todos os recortes da
   // conta se perdem.
   const { error } = await db.from("meta_insights_recorte").upsert(
-    linhas.map((l) => ({
+    unicas.map((l) => ({
       tenant_id: tenantId,
       ad_id: l.ad_id,
       dia: l.dia,
@@ -200,5 +256,5 @@ export async function gravarRecortes(
   );
 
   if (error) throw new Error(`Falha ao gravar recortes: ${error.message}`);
-  return linhas.length;
+  return unicas.length;
 }
