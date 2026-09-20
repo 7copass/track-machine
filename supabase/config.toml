@@ -378,3 +378,11 @@ verify_jwt = false
 # verify_jwt padrão continua ligado e é justamente o que a protege.
 [functions.enrich-ad-metadata]
 verify_jwt = true
+
+# Esta também não é webhook: o cron a chama com a service_role_key e o
+# botão manual também. O verify_jwt ligado é o que impede que qualquer um
+# a dispare — rate limit estourado derrubaria as sincronizações agendadas
+# junto, e o botão que existia para dar dado fresco impediria qualquer
+# dado de chegar.
+[functions.sync-meta-insights]
+verify_jwt = true
