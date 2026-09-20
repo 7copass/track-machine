@@ -1714,28 +1714,45 @@ Deno.serve(async (req: Request) => {
   const ate = diaISO(0);
   const resultado: unknown[] = [];
 
-  for (const conta of contas) {
-    // A trava do manual é por conta, não global: um operador atualizando o
-    // cliente A não deve impedir que ele atualize o cliente B.
-    if (tipo === "manual") {
+  // A trava e decidida UMA VEZ POR TENANT, antes do laco.
+  //
+  // Consultar dentro do laco parece equivalente e nao e: abrirExecucao
+  // grava em sync_runs com tipo='manual', e e de sync_runs que a trava le.
+  // A primeira conta abriria a execucao e a SEGUNDA conta do mesmo tenant
+  // encontraria essa execucao recem-aberta e se recusaria a rodar — na
+  // primeira chamada, sem nada de errado.
+  //
+  // Nao e hipotese: o tenant real tem duas contas, e a pulada seria
+  // justamente a que produz o unico custo por lead que existe hoje.
+  const travas = new Map<string, { pode: boolean; faltamSegundos: number }>();
+
+  if (tipo === "manual") {
+    for (const tenantId of new Set(contas.map((c) => c.tenant_id))) {
       const { data: ultima } = await db
         .from("sync_runs")
         .select("iniciado_em")
-        .eq("tenant_id", conta.tenant_id)
+        .eq("tenant_id", tenantId)
         .eq("tipo", "manual")
         .order("iniciado_em", { ascending: false })
         .limit(1)
         .maybeSingle();
 
-      const trava = podeRodarManual(ultima?.iniciado_em ?? null);
-      if (!trava.pode) {
-        resultado.push({
-          act_id: conta.act_id,
-          pulado: "trava",
-          faltam_segundos: trava.faltamSegundos,
-        });
-        continue;
-      }
+      travas.set(tenantId, podeRodarManual(ultima?.iniciado_em ?? null));
+    }
+  }
+
+  for (const conta of contas) {
+    // A trava e por TENANT, nao por conta: sync_runs nao tem coluna de
+    // conta, entao "por conta" nao e armazenavel. E o que se quer limitar
+    // e o botao, que dispara o tenant inteiro.
+    const trava = travas.get(conta.tenant_id);
+    if (trava && !trava.pode) {
+      resultado.push({
+        act_id: conta.act_id,
+        pulado: "trava",
+        faltam_segundos: trava.faltamSegundos,
+      });
+      continue;
     }
 
     const token = Deno.env.get(conta.token_ref);
@@ -1878,6 +1895,18 @@ que existia para dar dado fresco impediria qualquer dado de chegar."
   que funciona** — o parser junta `Deno.args` com `&`, então `--dias 90`
   viraria `dias&90` e o valor se perderia em silêncio, com o backfill
   rodando os 90 dias do default sem avisar que o argumento foi ignorado.
+
+> **Tamanho do lote — medido, não estimado.** A Tarefa 6 mediu a densidade
+> real na conta: **7,5 linhas de demografia e 4,5 de posicionamento por
+> anúncio-dia**, não as 21 células da grade cheia. Com isso, um bloco de 7
+> dias com 200 anúncios dá ~10,5 mil linhas num `upsert` só — três vezes
+> menos que a estimativa anterior, e ainda grande demais para uma chamada.
+>
+> Hoje a janela de 7 dias traz 464 linhas no maior recorte, então nada
+> quebra. Mas a carga histórica de 90 dias multiplica isso, e **é aqui que
+> o limite aparece primeiro**. Se um bloco falhar por tamanho, reduza
+> `DIAS_POR_BLOCO` antes de mexer em qualquer outra coisa — o desenho de
+> blocos existe exatamente para isso.
 
 **Por que CLI e não Edge Function:** 90 dias × 3 recortes não cabe no limite
 de execução de uma Edge Function. E o onboarding de cliente já é manual —
@@ -2114,6 +2143,17 @@ precisam."
   `AdMetadata` ganha `destinationType: string | null` e
   `optimizationGoal: string | null`; `ad_accounts.timezone` e
   `ad_metadata_cache.act_id` passam a ser mantidos pelo enriquecimento.
+
+> **Um problema que a Tarefa 6 expôs:** a view tem 103 linhas e **98 saem
+> com `ad_name` nulo**. O `enrich-ad-metadata` só resolve anúncio que gerou
+> touchpoint, e a maioria dos que aparecem no gasto nunca gerou lead.
+>
+> Não afeta o CPL, mas o painel mostraria uma lista majoritariamente sem
+> nome — e anúncio que gastou sem trazer lead é justamente o que o cliente
+> mais precisa identificar. A fila do enriquecimento precisa passar a
+> incluir anúncio que aparece em `meta_insights_diario`, não só o que
+> aparece em `ad_touchpoints`. O Passo 7 já reescreve essa view; inclua
+> essa origem também.
 
 - [ ] **Passo 1: Escrever os testes que falham**
 

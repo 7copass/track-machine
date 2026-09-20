@@ -247,8 +247,18 @@ passado (P5), a mesma linha de um dia será gravada várias vezes ao longo de
 uma semana, com valores diferentes. A chave primária composta garante
 correção no lugar, não duplicação.
 
-**A trava do botão vive no banco.** Antes de rodar manualmente, a função
-consulta o último `sync_runs` de tipo `manual` daquela conta; se foi há
+**A trava é por tenant, e decidida antes de percorrer as contas.**
+`sync_runs` não tem coluna de conta, então travar "por conta" não é
+armazenável — e o que se quer limitar é o botão, que dispara o tenant
+inteiro.
+
+Decidir dentro do laço de contas parece equivalente e não é: `abrirExecucao`
+grava em `sync_runs` com `tipo='manual'`, e é de `sync_runs` que a trava lê.
+A primeira conta abriria a execução e a segunda conta do mesmo tenant
+encontraria essa execução recém-aberta e se recusaria a rodar, na primeira
+chamada. Com duas contas reais no mesmo tenant, isso já aconteceria hoje.
+
+A função consulta o último `sync_runs` de tipo `manual` do tenant; se foi há
 menos de 5 minutos, recusa e devolve quanto falta. Ficar no banco importa
 porque Edge Function não tem memória entre invocações — uma trava em
 variável seria zerada a cada chamada.
