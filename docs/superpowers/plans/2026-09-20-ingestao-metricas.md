@@ -50,6 +50,10 @@ implicitamente.
 - **Falha nunca é silenciosa.** Todo caminho de erro registra o motivo, no
   padrão de `ultimaFalha` em `meta.ts` e `chatwoot.ts`.
 - **Commits em português**, imperativo, explicando o porquê e não o quê.
+- **`git add` sempre por caminho explícito**, nunca `-A` nem diretório
+  inteiro. Tarefas independentes podem rodar em paralelo nesta mesma árvore,
+  e `git add supabase/` já quase engoliu o trabalho em andamento de outra —
+  o arquivo dela apareceu entre o `add` e o `commit`.
 
 ## Estrutura de Arquivos
 
@@ -366,7 +370,8 @@ cliente relata como "o sistema não está funcionando", não como erro.
 - [ ] **Passo 6: Commit**
 
 ```bash
-git add supabase/
+git add supabase/migrations/20260920000100_insights_schema.sql \
+        supabase/tests/database/08_insights_schema.test.sql
 git commit -m "Schema da ingestao de metricas da Meta
 
 O fuso vira coluna de ad_accounts em vez de constante: a conta real e
@@ -633,7 +638,8 @@ estoura e siga.
 - [ ] **Passo 7: Commit**
 
 ```bash
-git add supabase/
+git add supabase/migrations/20260920000200_desempenho_view.sql \
+        supabase/tests/database/09_desempenho.test.sql
 git commit -m "View de custo por lead, com o fuso vindo da conta
 
 A Meta reporta no fuso da conta e received_at esta em UTC. Um lead das
@@ -1709,7 +1715,7 @@ Esperado: os leads reais já capturados aparecem com gasto e CPL.
 - [ ] **Passo 7: Commit**
 
 ```bash
-git add supabase/
+git add supabase/functions/sync-meta-insights/index.ts supabase/config.toml
 git commit -m "Sincronizacao recorrente e manual dos insights
 
 A janela e de 7 dias e nao so de hoje porque a Meta reescreve o
@@ -2108,7 +2114,48 @@ tenant tiver mais de uma conta:
       act_id: conta.act_id,
 ```
 
-- [ ] **Passo 7: Conferir o fuso contra a Meta**
+- [ ] **Passo 7: Alcançar o que já está em cache**
+
+`enrich-ad-metadata` lê de `touchpoints_sem_metadata`, e essa view **exclui
+anúncio já em cache** por construção (`and c.ad_id is null`). Então as
+colunas novas — `act_id`, `destination_type`, `optimization_goal` — nascem
+nulas nas linhas que já existem e **nunca seriam preenchidas**.
+
+Não é hipótese: verificado no banco, as três linhas de cache ficaram com
+`act_id` nulo. E o efeito é silencioso — a view cai no `coalesce` do fuso e
+segue funcionando, com o número certo enquanto as contas estiverem no mesmo
+fuso.
+
+Acrescentar à migration `20260920000300`:
+
+```sql
+-- A fila do enriquecimento so enxerga anuncio que nunca foi resolvido.
+-- Coluna nova em linha ja cacheada ficaria nula para sempre, e a view
+-- cairia no coalesce do fuso em carater permanente — com numero certo
+-- enquanto as contas coincidirem, o que e o que faz esse tipo de erro
+-- sobreviver.
+create or replace view touchpoints_sem_metadata
+with (security_invoker = true)
+as
+select distinct t.tenant_id, t.ad_id
+  from ad_touchpoints t
+  left join ad_metadata_cache c
+    on  c.ad_id     = t.ad_id
+    and c.tenant_id = t.tenant_id
+ where t.ad_id is not null
+   and (
+     -- nunca resolvido
+     c.ad_id is null
+     -- ou resolvido antes das colunas existirem
+     or c.act_id is null
+     or c.destination_type is null
+   );
+```
+
+Com isso a fila se auto-cura: coluna nova acrescentada depois entra na
+condição e as linhas antigas voltam para o enriquecimento sozinhas.
+
+- [ ] **Passo 8: Conferir o fuso contra a Meta**
 
 ```bash
 set -a && . ./.env && set +a
@@ -2130,7 +2177,7 @@ for c in contas:
 Esperado: todas com `OK`. Divergência aqui significa CPL diário errado com
 fechamento mensal certo — o erro que sobrevive meses.
 
-- [ ] **Passo 8: Escrever a migration do agendamento**
+- [ ] **Passo 9: Escrever a migration do agendamento**
 
 Criar `supabase/migrations/20260920000300_agendamento_insights.sql`:
 
@@ -2167,7 +2214,7 @@ select cron.schedule(
 );
 ```
 
-- [ ] **Passo 9: Configurar as settings que o job precisa**
+- [ ] **Passo 10: Configurar as settings que o job precisa**
 
 ```bash
 set -a && . ./.env && set +a
@@ -2223,7 +2270,7 @@ Esperado: as duas como `definida`. Se aparecerem como `VAZIA`, o job vai
 rodar sem fazer nada — que é o comportamento seguro que a guarda garante,
 mas não é o que você quer.
 
-- [ ] **Passo 10: Aplicar e confirmar que o job existe**
+- [ ] **Passo 11: Aplicar e confirmar que o job existe**
 
 ```bash
 set -a && . ./.env && set +a
@@ -2239,7 +2286,7 @@ for x in (r or []): print(' ', x)
 
 Esperado: `sincronizar-insights` com `0 */6 * * *`, ativo.
 
-- [ ] **Passo 11: Rodar a suíte inteira**
+- [ ] **Passo 12: Rodar a suíte inteira**
 
 ```bash
 deno test --allow-net --allow-read tests/unit/
@@ -2248,10 +2295,13 @@ python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 
 Esperado: tudo verde, nada regrediu.
 
-- [ ] **Passo 12: Commit**
+- [ ] **Passo 13: Commit**
 
 ```bash
-git add supabase/ tests/
+git add supabase/migrations/20260920000300_agendamento_insights.sql \
+        supabase/functions/_shared/meta.ts \
+        supabase/functions/enrich-ad-metadata/index.ts \
+        tests/unit/meta_test.ts
 git commit -m "Agenda a sincronizacao e classifica o tipo de campanha
 
 destination_type e optimization_goal passam a ser gravados porque

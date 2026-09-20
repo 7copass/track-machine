@@ -34,6 +34,11 @@ por dia** seja uma consulta simples.
 | P3 | **`destination_type` é o que separa mensagem de seguidores, não `objective`** | 84 campanhas e 200 conjuntos lidos da conta |
 | P4 | 97% da conta é campanha de mensagem (191 de 200 conjuntos) | idem |
 | P5 | A Meta reescreve dados passados por dias após o fato | comportamento conhecido da plataforma |
+| P6 | **O tenant real já tem duas contas de anúncio**, ambas `America/Belem` e BRL | `me/adaccounts` em 2026-09-20 |
+
+**Sobre P6:** múltiplas contas por cliente não é cenário futuro — é o estado
+atual. Toda consulta que resolve fuso, gasto ou metadata precisa casar a
+conta, não só o tenant.
 
 **Sobre P3 — corrige uma suposição que vinha sendo carregada.** Campanha de
 mensagem e de seguidores aparecem *ambas* como `OUTCOME_ENGAGEMENT`.
@@ -292,15 +297,31 @@ select
 from meta_insights_diario i
   left join ad_metadata_cache c
     on c.ad_id = i.ad_id and c.tenant_id = i.tenant_id
+  left join ad_accounts a
+    on  a.tenant_id = i.tenant_id
+    and a.act_id    = c.act_id        -- a conta DO ANUNCIO, nao "alguma"
   left join lateral (
     select count(*) as leads
       from ad_touchpoints t
-      join ad_accounts a on a.tenant_id = t.tenant_id
      where t.tenant_id = i.tenant_id
        and t.ad_id     = i.ad_id
-       and (t.received_at at time zone a.timezone)::date = i.dia
+       and (t.received_at
+            at time zone coalesce(a.timezone, 'America/Sao_Paulo'))::date = i.dia
   ) l on true;
 ```
+
+> **Esta versão corrige um bug que a primeira tinha.** Juntar
+> `ad_touchpoints` com `ad_accounts` apenas por `tenant_id` fazia um cliente
+> com duas contas de anúncio contar **cada lead uma vez por conta**,
+> cortando o CPL pela metade — e jogava o lead da segunda conta no dia
+> errado, porque o fuso escolhido podia ser o da outra.
+>
+> Não é hipótese: a conta real tem **duas** contas de anúncio
+> (`act_269873128000933` e `act_1229418598976392`), ambas do mesmo cliente.
+> Provado por mutação — a versão anterior devolve 8 leads onde há 4.
+>
+> Por isso `ad_metadata_cache` guarda `act_id`: é ele que liga o anúncio à
+> conta que o veiculou.
 
 O `lateral` existe para que o fuso venha de `ad_accounts` por linha, em vez
 de ser uma constante no corpo da view. Com um literal, cadastrar o primeiro
@@ -314,8 +335,13 @@ informação, não erro.
 **`left join` a partir do gasto**, porque anúncio com gasto e sem lead é
 justamente o que o cliente precisa ver.
 
-**O fuso sai de `ad_accounts.timezone`, não fica fixo no código.**
-`America/Belem` é o da TET_PROF; outro cliente pode ter outro.
+**O fuso sai de `ad_accounts.timezone` da conta que veiculou o anúncio**,
+não do tenant. Um cliente pode ter contas em fusos diferentes, e o dia do
+lead depende da conta, não do cliente.
+
+O `coalesce` cobre o anúncio ainda não enriquecido: mantém a linha visível
+em vez de sumi-la, e o enriquecimento corrige no ciclo seguinte. **Mas ele
+só é seguro se o enriquecimento de fato preencher** — ver P6.
 
 > Registrado para depois: o payload do Evolution traz
 > `conversionDelaySeconds` — o intervalo entre o clique no anúncio e a
