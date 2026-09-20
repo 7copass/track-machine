@@ -108,7 +108,7 @@ Criar `supabase/tests/database/08_insights_schema.test.sql`:
 -- finish() vem por union all com order by ord.
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(10),
+    extensions.plan(12),
 
     extensions.lives_ok(
       $$insert into tenants (id, nome, slug) values
@@ -196,6 +196,25 @@ select tap from (
       $$select * from meta_insights_recorte
          where chave->>'platform' = 'instagram'$$,
       'tenant B nao alcanca o recorte do tenant A nem filtrando por ele'
+    ),
+
+    -- As duas de cima provam que o tenant B e barrado. Sozinhas, elas
+    -- passariam com a policy escrita como `using (false)`, com a policy
+    -- ausente, ou com current_tenant_id() quebrado — e o sintoma em
+    -- producao seria painel vazio, nao erro. As duas de baixo fecham a
+    -- outra metade: o tenant A PRECISA ler o que e dele.
+    extensions.diag(set_config(
+      'request.jwt.claims',
+      '{"tenant_id":"11111111-1111-1111-1111-111111111111"}', true)),
+    extensions.results_eq(
+      $$select gasto_centavos from meta_insights_diario$$,
+      array[35500::bigint],
+      'tenant A le o proprio insight'
+    ),
+    extensions.results_eq(
+      $$select count(*)::int from meta_insights_recorte$$,
+      array[2],
+      'tenant A le os proprios recortes'
     )
   ]) as tap
   union all
@@ -324,7 +343,7 @@ supabase db push --linked --include-all --yes
 python3 scripts/run_pgtap.py supabase/tests/database/08_insights_schema.test.sql
 ```
 
-Esperado: 10 asserções passando.
+Esperado: 12 asserções passando.
 
 - [ ] **Passo 5: Verificar por mutação que o isolamento tem dente**
 
@@ -335,6 +354,14 @@ rollback por exceção do runner desfaz o DDL, então o banco não muda.
 
 Se elas continuarem verdes com o RLS desligado, o teste não prova nada e
 precisa ser reescrito.
+
+**Faça também a mutação oposta:** troque as duas policies por
+`using (false)` e confirme que as asserções `tenant A le o proprio insight`
+e `tenant A le os proprios recortes` ficam vermelhas.
+
+Provar só que o tenant B é barrado não basta: uma policy fechada demais
+passaria nesse teste e apareceria em produção como painel vazio — que o
+cliente relata como "o sistema não está funcionando", não como erro.
 
 - [ ] **Passo 6: Commit**
 
@@ -382,7 +409,7 @@ Criar `supabase/tests/database/09_desempenho.test.sql`:
 -- Formato exigido pelo runner: a suite inteira e UMA consulta.
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(9),
+    extensions.plan(11),
 
     extensions.lives_ok(
       $$insert into tenants (id, nome, slug) values
@@ -398,11 +425,11 @@ select tap from (
     extensions.lives_ok(
       $$insert into ad_metadata_cache
           (tenant_id, ad_id, ad_name, adset_name, campaign_name,
-           destination_type)
+           destination_type, act_id)
         values ('11111111-1111-1111-1111-111111111111', 'ad_1', 'Criativo A',
-                'CJ01', 'VAGA', 'WHATSAPP'),
+                'CJ01', 'VAGA', 'WHATSAPP', 'act_1'),
                ('11111111-1111-1111-1111-111111111111', 'ad_zero', 'Criativo Z',
-                'CJ02', 'VAGA', 'WHATSAPP')$$,
+                'CJ02', 'VAGA', 'WHATSAPP', 'act_1')$$,
       'fixtures: dois anuncios com nome'
     ),
     extensions.lives_ok(
@@ -466,6 +493,22 @@ select tap from (
          where ad_id = 'ad_zero'$$,
       array[null::bigint],
       'CPL sem lead e nulo, nunca infinito'
+    ),
+
+    -- Varias contas por cliente e o caso que o operador descreveu desde o
+    -- inicio. Sem resolver o fuso pela conta DO ANUNCIO, cada lead seria
+    -- contado uma vez por conta do tenant e o CPL cairia pela metade.
+    extensions.lives_ok(
+      $$insert into ad_accounts (tenant_id, act_id, nome, timezone)
+        values ('11111111-1111-1111-1111-111111111111', 'act_2', 'Segunda',
+                'America/Sao_Paulo')$$,
+      'fixture: uma segunda conta no mesmo tenant'
+    ),
+    extensions.results_eq(
+      $$select leads from desempenho_por_anuncio
+         where ad_id = 'ad_1' and dia = '2026-09-18'$$,
+      array[4::bigint],
+      'a segunda conta do tenant nao duplica a contagem de leads'
     )
   ]) as tap
   union all
@@ -486,18 +529,32 @@ Esperado: FALHA com `relation "desempenho_por_anuncio" does not exist`.
 Criar `supabase/migrations/20260920000200_desempenho_view.sql`:
 
 ```sql
+-- O anuncio precisa saber de qual conta ele veio.
+--
+-- Sem isso, a view resolveria o fuso juntando ad_touchpoints com
+-- ad_accounts apenas por tenant — e um tenant com DUAS contas de anuncio
+-- contaria cada lead duas vezes, cortando o CPL pela metade. Verificado
+-- por teste: um lead, duas contas, count devolve 2.
+--
+-- Varias contas por cliente nao e hipotese: e o caso que o operador
+-- descreveu desde o inicio.
+alter table ad_metadata_cache
+  add column act_id text;
+
 /**
  * Custo por lead por anuncio por dia.
  *
- * O fuso vem de ad_accounts por linha, via lateral, e nao como literal no
- * corpo da view. Com um literal, cadastrar o primeiro cliente de outro
- * fuso exigiria recriar a view — e ninguem perceberia ate os numeros
- * sairem errados.
+ * O fuso vem da CONTA DO ANUNCIO, resolvida por ad_metadata_cache.act_id,
+ * e nao de "alguma conta do tenant".
  *
- * A Meta reporta no fuso da conta; received_at esta em UTC. Um lead das
+ * A Meta reporta no fuso da conta e received_at esta em UTC: um lead das
  * 22h em Belem e 01h UTC do dia seguinte. Agrupar por data UTC joga todo
- * lead entre 21h e meia-noite para o dia errado: o CPL diario fica errado
+ * lead entre 21h e meia-noite para o dia errado — o CPL diario sai errado
  * e o mensal fecha certo, que e pior porque esconde o problema.
+ *
+ * O coalesce cobre o anuncio que ainda nao foi enriquecido quando o gasto
+ * chegou: mantem a linha visivel em vez de some-la, e o enriquecimento
+ * corrige no ciclo seguinte.
  */
 create view desempenho_por_anuncio
 with (security_invoker = true)
@@ -522,13 +579,16 @@ from meta_insights_diario i
   left join ad_metadata_cache c
     on  c.ad_id     = i.ad_id
     and c.tenant_id = i.tenant_id
+  left join ad_accounts a
+    on  a.tenant_id = i.tenant_id
+    and a.act_id    = c.act_id
   left join lateral (
     select count(*) as leads
       from ad_touchpoints t
-      join ad_accounts a on a.tenant_id = t.tenant_id
      where t.tenant_id = i.tenant_id
        and t.ad_id     = i.ad_id
-       and (t.received_at at time zone a.timezone)::date = i.dia
+       and (t.received_at
+            at time zone coalesce(a.timezone, 'America/Sao_Paulo'))::date = i.dia
   ) l on true;
 ```
 
@@ -540,7 +600,7 @@ supabase db push --linked --include-all --yes
 python3 scripts/run_pgtap.py supabase/tests/database/09_desempenho.test.sql
 ```
 
-Esperado: 9 asserções passando.
+Esperado: 11 asserções passando.
 
 - [ ] **Passo 5: Verificar por mutação que o teste de fuso tem dente**
 
@@ -1915,7 +1975,8 @@ precisam."
   com as colunas da Tarefa 1.
 - Produz: job `pg_cron` `sincronizar-insights` de 6 em 6 horas;
   `AdMetadata` ganha `destinationType: string | null` e
-  `optimizationGoal: string | null`.
+  `optimizationGoal: string | null`; `ad_accounts.timezone` e
+  `ad_metadata_cache.act_id` passam a ser mantidos pelo enriquecimento.
 
 - [ ] **Passo 1: Escrever os testes que falham**
 
@@ -2006,7 +2067,70 @@ deno test --allow-net --allow-read tests/unit/
 
 Esperado: tudo verde, com os dois testes novos.
 
-- [ ] **Passo 6: Escrever a migration do agendamento**
+- [ ] **Passo 6: Fazer o enriquecimento manter o fuso e a conta de origem**
+
+O `default 'America/Sao_Paulo'` da coluna `timezone` é uma armadilha: entra
+calado e parece certo. Na conta real isso já aconteceu — a TET_PROF é
+`America/Belem`, recebeu o default, e ninguém notaria, porque os dois só
+coincidem enquanto o Brasil não tiver horário de verão.
+
+Depender de alguém lembrar no onboarding repetiria o erro no próximo
+cliente. Ler da Meta a cada ciclo faz o valor se corrigir sozinho.
+
+Em `supabase/functions/enrich-ad-metadata/index.ts`, no laço que já percorre
+as contas, antes de resolver os anúncios:
+
+```typescript
+    // O fuso da conta e a fonte da verdade do CPL diario. Default que
+    // parece certo e pior que campo vazio: ele nao pede correcao.
+    try {
+      const r = await fetch(
+        `https://graph.facebook.com/${versaoApi}/${conta.act_id}` +
+          `?fields=timezone_name&access_token=${encodeURIComponent(token)}`,
+      );
+      const j = await r.json();
+      if (r.ok && typeof j.timezone_name === "string") {
+        await db.from("ad_accounts")
+          .update({ timezone: j.timezone_name })
+          .eq("tenant_id", linha.tenant_id)
+          .eq("act_id", conta.act_id);
+      }
+    } catch (e) {
+      console.warn(`Nao consegui ler o fuso de ${conta.act_id}`, e);
+    }
+```
+
+E no `upsert` de `ad_metadata_cache`, gravar a conta de origem — sem ela a
+view não resolve o fuso do anúncio e volta a contar lead duplicado quando o
+tenant tiver mais de uma conta:
+
+```typescript
+      act_id: conta.act_id,
+```
+
+- [ ] **Passo 7: Conferir o fuso contra a Meta**
+
+```bash
+set -a && . ./.env && set +a
+python3 -c "
+import sys, os, json, urllib.request; sys.path.insert(0,'scripts')
+from run_pgtap import carregar_env, executar
+carregar_env()
+ok, contas = executar('select act_id, timezone from ad_accounts')
+for c in contas:
+    url = ('https://graph.facebook.com/v21.0/' + c['act_id']
+           + '?fields=timezone_name&access_token='
+           + os.environ['META_ACCESS_TOKEN'])
+    real = json.load(urllib.request.urlopen(url)).get('timezone_name')
+    marca = 'OK' if real == c['timezone'] else 'DIVERGE: Meta diz ' + str(real)
+    print(' ', c['act_id'], c['timezone'], marca)
+"
+```
+
+Esperado: todas com `OK`. Divergência aqui significa CPL diário errado com
+fechamento mensal certo — o erro que sobrevive meses.
+
+- [ ] **Passo 8: Escrever a migration do agendamento**
 
 Criar `supabase/migrations/20260920000300_agendamento_insights.sql`:
 
@@ -2043,7 +2167,7 @@ select cron.schedule(
 );
 ```
 
-- [ ] **Passo 7: Configurar as settings que o job precisa**
+- [ ] **Passo 9: Configurar as settings que o job precisa**
 
 ```bash
 set -a && . ./.env && set +a
@@ -2099,7 +2223,7 @@ Esperado: as duas como `definida`. Se aparecerem como `VAZIA`, o job vai
 rodar sem fazer nada — que é o comportamento seguro que a guarda garante,
 mas não é o que você quer.
 
-- [ ] **Passo 8: Aplicar e confirmar que o job existe**
+- [ ] **Passo 10: Aplicar e confirmar que o job existe**
 
 ```bash
 set -a && . ./.env && set +a
@@ -2115,7 +2239,7 @@ for x in (r or []): print(' ', x)
 
 Esperado: `sincronizar-insights` com `0 */6 * * *`, ativo.
 
-- [ ] **Passo 9: Rodar a suíte inteira**
+- [ ] **Passo 11: Rodar a suíte inteira**
 
 ```bash
 deno test --allow-net --allow-read tests/unit/
@@ -2124,7 +2248,7 @@ python3 scripts/run_pgtap.py supabase/tests/database/*.test.sql
 
 Esperado: tudo verde, nada regrediu.
 
-- [ ] **Passo 10: Commit**
+- [ ] **Passo 12: Commit**
 
 ```bash
 git add supabase/ tests/

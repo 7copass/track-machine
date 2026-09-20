@@ -39,9 +39,16 @@ select tap from (
       array[64],
       'todo tenant nasce com segredo de webhook de 256 bits'
     ),
-    extensions.ok(
-      (select count(distinct webhook_secret)::int from chatwoot_configs) =
-      (select count(*)::int from chatwoot_configs),
+    -- Esta assercao tinha dois defeitos que se escondiam um no outro: ok()
+    -- com subconsulta inline le o snapshot de ANTES das fixtures, e a
+    -- contagem varria a tabela inteira. Antes das fixtures havia uma linha
+    -- so, entao 1 = 1 passava sem provar nada. Em SQL como texto e
+    -- escopada, ela volta a comparar os segredos que o teste criou.
+    extensions.results_eq(
+      $$select count(distinct webhook_secret)::int from chatwoot_configs
+         where tenant_id in ('11111111-1111-1111-1111-111111111111',
+                             '22222222-2222-2222-2222-222222222222')$$,
+      array[2::int],
       'cada tenant tem um segredo diferente'
     ),
     extensions.throws_ok(
@@ -62,8 +69,15 @@ select tap from (
     -- inbox_id so aparece quando o primeiro evento do Chatwoot chega; ele
     -- nao pode ser obrigatorio no cadastro, senao o onboarding trava
     -- esperando um dado que ninguem tem ainda.
+    -- Escopado aos proprios tenants de fixture, nao a tabela inteira:
+    -- contar a tabela toda faz o teste quebrar no dia em que existir uma
+    -- config de producao — que e o que aconteceu aqui quando o primeiro
+    -- cliente real foi cadastrado.
     extensions.results_eq(
-      $$select count(*)::int from chatwoot_configs where inbox_id is null$$,
+      $$select count(*)::int from chatwoot_configs
+         where inbox_id is null
+           and tenant_id in ('11111111-1111-1111-1111-111111111111',
+                             '22222222-2222-2222-2222-222222222222')$$,
       array[2::int],
       'inbox_id e opcional no cadastro'
     ),

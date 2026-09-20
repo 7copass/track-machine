@@ -3,7 +3,7 @@
 -- finish() vem por union all com order by ord.
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(10),
+    extensions.plan(12),
 
     extensions.lives_ok(
       $$insert into tenants (id, nome, slug) values
@@ -91,6 +91,25 @@ select tap from (
       $$select * from meta_insights_recorte
          where chave->>'platform' = 'instagram'$$,
       'tenant B nao alcanca o recorte do tenant A nem filtrando por ele'
+    ),
+
+    -- As duas de cima provam que o tenant B e barrado. Sozinhas, passariam
+    -- com a policy escrita como `using (false)`, com a policy ausente, ou
+    -- com current_tenant_id() quebrado — e o sintoma em producao seria
+    -- painel vazio, que o cliente relata como "nao esta funcionando" e
+    -- ninguem procura no RLS. As duas de baixo fecham a outra metade.
+    extensions.diag(set_config(
+      'request.jwt.claims',
+      '{"tenant_id":"11111111-1111-1111-1111-111111111111"}', true)),
+    extensions.results_eq(
+      $$select gasto_centavos from meta_insights_diario$$,
+      array[35500::bigint],
+      'tenant A le o proprio insight'
+    ),
+    extensions.results_eq(
+      $$select count(*)::int from meta_insights_recorte$$,
+      array[2],
+      'tenant A le os proprios recortes'
     )
   ]) as tap
   union all
