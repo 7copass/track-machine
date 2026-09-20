@@ -1106,7 +1106,28 @@ import {
 } from "./insights_norm.ts";
 
 const VERSAO_PADRAO = "v21.0";
-const MAX_PAGINAS = 100;
+
+/**
+ * Teto de paginas por chamada.
+ *
+ * Um bloco de 7 dias de demografia com 200 anuncios ja consome ~59 paginas
+ * de 500 linhas. Cem seria margem fina demais. Bater no teto vira falha
+ * explicita, nao periodo truncado em silencio.
+ */
+const MAX_PAGINAS = 500;
+
+/**
+ * Forma da resposta, declarada em vez de inferida.
+ *
+ * Sem isto o arquivo NAO COMPILA: `url` recebe `corpo.paging?.next`,
+ * `corpo` vem de `r.json()` e `r` vem de `fetch(url)` — o compilador nao
+ * fecha o ciclo e recusa com TS7022.
+ */
+type RespostaInsights = {
+  data?: Record<string, unknown>[];
+  paging?: { next?: string };
+  error?: { code?: number; message?: string };
+};
 
 export type Recorte = "base" | "posicionamento" | "demografia";
 
@@ -1121,7 +1142,20 @@ export type LinhaRecorte = {
   acoes: Record<string, number>;
 };
 
-export type FalhaInsights = "http" | "erro_api" | "rede" | null;
+export type FalhaInsights =
+  | "http"
+  | "erro_api"
+  | "rede"
+  /**
+   * O periodo nao coube no teto de paginas.
+   *
+   * E falha, nao aviso: devolver as paginas que deram tempo, como se o
+   * periodo estivesse completo, grava gasto subestimado no banco. O
+   * operador confere contra o Gerenciador, nao bate, e nada no sistema
+   * aponta o motivo.
+   */
+  | "truncado"
+  | null;
 export let ultimaFalha: FalhaInsights = null;
 
 const CAMPOS_BASE = [
@@ -1192,8 +1226,8 @@ export async function buscarInsights(opts: {
 
       if (!r.ok) {
         ultimaFalha = "http";
-        const corpo = await r.json().catch(() => ({}));
-        const err = (corpo as Record<string, any>)?.error;
+        const corpo: RespostaInsights = await r.json().catch(() => ({}));
+        const err = corpo?.error;
         if (err) ultimaFalha = "erro_api";
         console.warn(
           `Insights recusados para ${opts.actId} (${opts.recorte}): ` +
@@ -1202,7 +1236,7 @@ export async function buscarInsights(opts: {
         return null;
       }
 
-      const corpo = await r.json();
+      const corpo: RespostaInsights = await r.json();
       if (corpo.error) {
         ultimaFalha = "erro_api";
         console.warn(
@@ -1234,6 +1268,17 @@ export async function buscarInsights(opts: {
       }
 
       url = corpo.paging?.next ?? null;
+
+      // Truncar em silencio gravaria gasto subestimado, e o painel
+      // mostraria um numero menor que o real sem nada indicar que faltou.
+      if (url && p === MAX_PAGINAS - 1) {
+        ultimaFalha = "truncado";
+        console.error(
+          `Periodo nao coube em ${MAX_PAGINAS} paginas para ${opts.actId} ` +
+            `(${opts.recorte}, ${opts.desde} a ${opts.ate}). Estreite a janela.`,
+        );
+        return null;
+      }
     }
 
     return { base, recortes };
@@ -1252,6 +1297,23 @@ deno test --allow-net tests/unit/meta_insights_test.ts
 ```
 
 Esperado: 8 testes passando.
+
+> Os oito do plano são o mínimo. A paginação, os `breakdowns` e a variante
+> `"http"` merecem teste além deles — ver o bloco de observações abaixo.
+
+> **Três testes do plano provam menos do que parecem.** Encontrados ao
+> executar a tarefa, e todos confirmados por mutação:
+>
+> - O de **paginação** usa um mock que ignora a URL recebida. Uma
+>   implementação que repetisse a mesma URL em vez de seguir `paging.next`
+>   passaria igual. Acrescente uma asserção sobre a URL da segunda chamada.
+> - **`breakdowns` não tem teste nenhum** — e é o parâmetro que faz a Meta
+>   quebrar a linha por posicionamento ou demografia. Sem ele, toda linha
+>   sai com `{platform:"",position:""}`; como `chave` entra na primária de
+>   `meta_insights_recorte`, as linhas colidiriam e se sobrescreveriam até
+>   sobrar uma, com o gasto do recorte simplesmente errado e nenhum erro.
+> - A variante **`"http"`** tem cobertura zero: os três casos de falha do
+>   plano trazem corpo de erro e caem todos em `erro_api`.
 
 - [ ] **Passo 5: Commit**
 

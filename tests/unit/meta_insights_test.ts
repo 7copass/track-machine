@@ -227,14 +227,18 @@ Deno.test("para no teto de paginas em vez de girar para sempre", async () => {
   // Resposta que sempre aponta para a proxima pagina deixaria a Edge
   // Function girando ate o limite de execucao: nada gravado, nenhum erro,
   // e a sincronizacao simplesmente nao termina nunca.
+  //
+  // Parar e necessario, mas nao basta: devolver as paginas que couberam,
+  // como se o periodo estivesse completo, grava gasto subestimado. Por
+  // isso o teto recusa em vez de truncar — ver o teste de truncamento.
   const m = mockPaginas([
     { data: [{ ad_id: "1", date_start: "2026-09-18", spend: "1" }],
       paging: { next: "https://graph.facebook.com/proxima" } },
   ]);
   try {
     const r = await buscarInsights({ ...OPTS, recorte: "base" });
-    assertEquals(m.chamadas.length, 100);
-    assertEquals(r!.base.length, 100);
+    assertEquals(m.chamadas.length, 500);
+    assertEquals(r, null);
   } finally { m.restaurar(); }
 });
 
@@ -337,4 +341,30 @@ Deno.test("sucesso limpa a falha sem depender da ordem dos testes", async () => 
     await buscarInsights({ ...OPTS, recorte: "base" });
     assertEquals(ultimaFalha, null);
   } finally { bom.restaurar(); }
+});
+
+// ─── Truncamento: falhar alto em vez de mentir ──────────────────
+
+Deno.test("recusa em vez de devolver periodo truncado", async () => {
+  // Um bloco de 7 dias de demografia com 200 anuncios ja precisa de ~59
+  // paginas. Devolver o que deu tempo de buscar, como se estivesse
+  // completo, grava gasto subestimado no banco — e o painel mostra um
+  // numero menor que o real sem nada indicar que faltou.
+  const original = globalThis.fetch;
+  globalThis.fetch = (() =>
+    Promise.resolve(new Response(JSON.stringify({
+      data: [{ ad_id: "1", date_start: "2026-09-18", spend: "1.00" }],
+      paging: { next: "https://graph.facebook.com/sempre-tem-mais" },
+    }), { status: 200 }))) as typeof fetch;
+  try {
+    const r = await buscarInsights({
+      token: "t", actId: "act_1",
+      desde: "2026-09-14", ate: "2026-09-20", recorte: "base",
+    });
+    assertEquals(r, null);
+    const mod = await import(
+      "../../supabase/functions/_shared/meta_insights.ts"
+    );
+    assertEquals(mod.ultimaFalha, "truncado");
+  } finally { globalThis.fetch = original; }
 });

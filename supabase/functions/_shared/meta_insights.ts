@@ -38,7 +38,15 @@ const VERSAO_PADRAO = "v21.0";
  * execução, e o sintoma seria a sincronização inteira não terminar nunca —
  * sem nenhuma linha gravada e sem erro.
  */
-const MAX_PAGINAS = 100;
+/**
+ * Teto de paginas por chamada.
+ *
+ * Um bloco de 7 dias de demografia com 200 anuncios ja consome ~59 paginas
+ * de 500 linhas. Cem seria margem fina demais, e crescer o numero de
+ * anuncios estoura. Quinhentas cobrem 250 mil linhas, e bater nelas vira
+ * falha explicita em vez de periodo truncado em silencio.
+ */
+const MAX_PAGINAS = 500;
 
 export type Recorte = "base" | "posicionamento" | "demografia";
 
@@ -54,7 +62,20 @@ export type LinhaRecorte = {
 };
 
 /** Motivo da última falha, para quem chama poder contar e alertar. */
-export type FalhaInsights = "http" | "erro_api" | "rede" | null;
+export type FalhaInsights =
+  | "http"
+  | "erro_api"
+  | "rede"
+  /**
+   * O periodo nao coube no teto de paginas.
+   *
+   * E falha, nao aviso: devolver as paginas que deram tempo, como se o
+   * periodo estivesse completo, grava gasto subestimado no banco. O painel
+   * mostraria um numero menor que o real, o operador confere contra o
+   * Gerenciador, nao bate, e nada no sistema aponta o motivo.
+   */
+  | "truncado"
+  | null;
 export let ultimaFalha: FalhaInsights = null;
 
 const CAMPOS_BASE = [
@@ -204,10 +225,13 @@ export async function buscarInsights(opts: {
       // tipo para isso e inventar uma quebraria quem consome, mas sair
       // daqui sem dizer nada deixaria dado faltando parecer dado completo.
       if (url && p === MAX_PAGINAS - 1) {
-        console.warn(
-          `Insights de ${opts.actId} (${opts.recorte}) pararam no teto de ` +
-            `${MAX_PAGINAS} paginas; o periodo pode estar truncado`,
+        ultimaFalha = "truncado";
+        console.error(
+          `Periodo nao coube em ${MAX_PAGINAS} paginas para ${opts.actId} ` +
+            `(${opts.recorte}, ${opts.desde} a ${opts.ate}). Estreite a ` +
+            `janela: devolver parcial gravaria gasto subestimado.`,
         );
+        return null;
       }
     }
 
