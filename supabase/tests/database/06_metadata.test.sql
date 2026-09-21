@@ -93,8 +93,17 @@ select tap from (
     -- A fila e o que a funcao de enriquecimento varre. Tudo que ja foi
     -- resolvido precisa sair dela, senao a varredura gasta chamada de
     -- Graph API repetindo anuncio que ja esta no cache.
+    -- Escopado aos tenants da fixture. Sem isso a assercao compara o
+    -- conteudo INTEIRO da view contra sete ad_id inventados — e o banco
+    -- tem 839 anuncios reais de producao. Pior que quebrar: fica
+    -- intermitente, verde quando o cron drena a fila e vermelha no
+    -- proximo anuncio novo, treinando quem olha a suite a ignorar o
+    -- vermelho.
     extensions.results_eq(
-      $$select ad_id from touchpoints_sem_metadata order by ad_id$$,
+      $$select ad_id from touchpoints_sem_metadata
+         where tenant_id in ('11111111-1111-1111-1111-111111111111',
+                             '22222222-2222-2222-2222-222222222222')
+         order by ad_id$$,
       array['ad_cache_velho'::text, 'ad_do_b', 'ad_gasto_b', 'ad_pend_1',
             'ad_pend_2', 'ad_resolvido', 'ad_so_gasto'],
       'a fila traz quem trouxe lead e quem so gastou, e mais ninguem'

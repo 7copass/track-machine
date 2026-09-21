@@ -1985,14 +1985,21 @@ async function main() {
 
   const versao = env.META_API_VERSION ?? "v21.0";
 
-  for (const conta of contas) {
-    const token = env[conta.token_ref];
-    if (!token) {
-      console.error(`✗ ${conta.act_id}: token ${conta.token_ref} ausente`);
-      continue;
-    }
-
-    console.log(`\n${conta.act_id} — ${totalDias} dias em blocos de ${DIAS_POR_BLOCO}`);
+  // O laco de BLOCOS fica por fora, e o de contas por dentro.
+  //
+  // Invertido — contas por fora, como parecia natural — a carga perde
+  // dados em silencio: sync_runs nao tem coluna de conta, entao a
+  // primeira conta grava o `ok` do bloco e a segunda conta do MESMO
+  // tenant encontra essa linha e pula. E pula para sempre, porque a
+  // retomada continua achando o `ok`.
+  //
+  // Aconteceu de verdade na primeira execucao: uma das duas contas reais
+  // perdeu 7.435 linhas sem nenhum erro. E o mesmo tropeco que a trava
+  // da Edge Function documenta.
+  for (const tenantId of new Set(contas.map((c) => c.tenant_id))) {
+    const contasDoTenant = contas.filter((c) => c.tenant_id === tenantId);
+    console.log(`\ntenant ${tenantId} — ${contasDoTenant.length} conta(s), ` +
+      `${totalDias} dias em blocos de ${DIAS_POR_BLOCO}`);
 
     for (let inicio = totalDias; inicio > 0; inicio -= DIAS_POR_BLOCO) {
       const desde = dia(inicio);

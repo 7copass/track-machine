@@ -27,7 +27,13 @@ def carregar_env() -> None:
             k, v = linha.split("=", 1)
             # setdefault deixaria uma variavel ja exportada no shell
             # vencer o .env em silencio — e apontar para o projeto errado.
-            os.environ[k.strip()] = v.strip()
+            valor = v.strip()
+            # Tira aspas: `supabase projects api-keys -o env` devolve o
+            # valor entre aspas, e sem isso elas entram no proprio segredo.
+            # O sintoma e "Invalid API key" com a chave certa no arquivo.
+            if len(valor) >= 2 and valor[0] == valor[-1] and valor[0] in "\"'":
+                valor = valor[1:-1]
+            os.environ[k.strip()] = valor
 
 
 def executar(sql: str) -> tuple[bool, object]:
