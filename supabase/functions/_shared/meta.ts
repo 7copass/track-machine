@@ -34,6 +34,29 @@ export type AdMetadata = {
   campaignId: string | null;
   campaignName: string | null;
   objetivo: string | null;
+  /**
+   * `WHATSAPP`, `INSTAGRAM_PROFILE`, `MESSAGING_INSTAGRAM_DIRECT_WHATSAPP`…
+   *
+   * É o que separa campanha de mensagem de campanha de seguidores — o
+   * `objective` não serve, porque as duas aparecem como
+   * `OUTCOME_ENGAGEMENT`. Verificado na conta real: 191 conjuntos
+   * `WHATSAPP` contra 4 `INSTAGRAM_PROFILE`, todos sob o mesmo objetivo.
+   * Campanha sem lead precisa de outra métrica que não custo por lead.
+   */
+  destinationType: string | null;
+  optimizationGoal: string | null;
+  /**
+   * A conta de anúncio a que este anúncio pertence, já com o prefixo
+   * `act_` que `ad_accounts.act_id` usa.
+   *
+   * Vem do próprio anúncio e não da conta que o chamador tinha em mãos:
+   * um tenant com DUAS contas — que é o caso real — não permite deduzir
+   * a origem do anúncio a partir de "alguma conta do tenant", e é por
+   * esta coluna que a view resolve o fuso do CPL diário. Atribuir a conta
+   * errada aqui não dá erro nenhum: dá número errado, e só quando as duas
+   * contas estiverem em fusos diferentes.
+   */
+  actId: string | null;
 };
 
 /** Motivo da última falha, para quem chama poder contar e alertar. */
@@ -41,13 +64,36 @@ export type FalhaMeta = "http" | "erro_api" | "rede" | null;
 
 export let ultimaFalha: FalhaMeta = null;
 
+/**
+ * Normaliza `account_id` para o formato de `ad_accounts.act_id`.
+ *
+ * A Graph API devolve o id da conta sem o prefixo (`269873128000933`),
+ * enquanto a tabela guarda com (`act_269873128000933`). Gravar o formato
+ * cru faria o join da view não casar nunca e o fuso cair no `coalesce`
+ * permanentemente — sem erro, só com número errado quando os fusos
+ * divergirem.
+ */
+function comPrefixoAct(bruto: unknown): string | null {
+  if (typeof bruto !== "string" && typeof bruto !== "number") return null;
+  const texto = String(bruto).trim();
+  if (!texto) return null;
+  return texto.startsWith("act_") ? texto : `act_${texto}`;
+}
+
 export async function buscarMetadataDoAnuncio(
   token: string,
   adId: string,
   versao: string = VERSAO_PADRAO,
 ): Promise<AdMetadata | null> {
   ultimaFalha = null;
-  const campos = "id,name,adset{id,name},campaign{id,name,objective}";
+  // `account_id`, `destination_type` e `optimization_goal` precisam estar
+  // AQUI, nao so no mapeamento do retorno: a Graph API devolve exatamente
+  // o que esta lista pede. Ler um campo que nao foi pedido devolve null
+  // para sempre, sem erro nenhum — falha silenciosa do tipo que este
+  // projeto ja pagou caro.
+  const campos = "id,name,account_id," +
+    "adset{id,name,destination_type,optimization_goal}," +
+    "campaign{id,name,objective}";
   const url = `https://graph.facebook.com/${versao}/${adId}` +
     `?fields=${encodeURIComponent(campos)}&access_token=${
       encodeURIComponent(token)
@@ -76,6 +122,9 @@ export async function buscarMetadataDoAnuncio(
       campaignId: j.campaign?.id ?? null,
       campaignName: j.campaign?.name ?? null,
       objetivo: j.campaign?.objective ?? null,
+      destinationType: j.adset?.destination_type ?? null,
+      optimizationGoal: j.adset?.optimization_goal ?? null,
+      actId: comPrefixoAct(j.account_id),
     };
   } catch (e) {
     // Rede fora, DNS, timeout: mesmo tratamento das demais falhas. O

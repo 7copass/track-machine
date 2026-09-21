@@ -11,7 +11,7 @@
 
 select tap from (
   select 1 as ord, unnest(array[
-    extensions.plan(15),
+    extensions.plan(21),
 
     -- Dois tenants: o segundo existe so para provar que nem a fila nem o
     -- cache entregam o anuncio de um cliente a outro.
@@ -21,8 +21,8 @@ select tap from (
           ('22222222-2222-2222-2222-222222222222', 'Cliente B', 'cliente-b')$$,
       'fixtures: dois tenants'
     ),
-    -- Cinco touchpoints do tenant A cobrindo as quatro situacoes que a
-    -- fila precisa distinguir, mais um do tenant B.
+    -- Cinco touchpoints do tenant A cobrindo as situacoes que a fila
+    -- precisa distinguir, mais um do tenant B.
     extensions.lives_ok(
       $$insert into ad_touchpoints
           (tenant_id, wa_message_id, phone_e164, phone_match_key,
@@ -49,15 +49,45 @@ select tap from (
            '2026-09-01 15:00:00+00', '{}'::jsonb)$$,
       'fixtures: cinco touchpoints do tenant A e um do tenant B'
     ),
+    -- Tres estados de cache que a fila tem de distinguir:
+    --   ad_em_cache      resolvido AGORA, ainda sem as colunas novas
+    --   ad_cache_velho   resolvido ANTES de as colunas existirem
+    --   ad_cache_completo resolvido antes, mas ja com tudo preenchido
     extensions.lives_ok(
       $$insert into ad_metadata_cache
-          (ad_id, tenant_id, ad_name, adset_id, campaign_id)
+          (ad_id, tenant_id, ad_name, adset_id, campaign_id,
+           act_id, destination_type, atualizado_em)
         values
           ('ad_em_cache', '11111111-1111-1111-1111-111111111111',
-           'Criativo ja resolvido', 'conj_1', 'camp_9'),
+           'Criativo ja resolvido', 'conj_1', 'camp_9',
+           null, null, now()),
+          ('ad_cache_velho', '11111111-1111-1111-1111-111111111111',
+           'Criativo antigo', 'conj_2', 'camp_8',
+           null, null, '2026-09-19 10:00:00+00'),
+          ('ad_cache_completo', '11111111-1111-1111-1111-111111111111',
+           'Criativo completo', 'conj_3', 'camp_7',
+           'act_1', 'WHATSAPP', '2026-09-19 10:00:00+00'),
           ('ad_cache_b', '22222222-2222-2222-2222-222222222222',
-           'Criativo do outro cliente', 'conj_b', 'camp_b')$$,
-      'fixtures: um anuncio ja em cache para cada tenant'
+           'Criativo do outro cliente', 'conj_b', 'camp_b',
+           null, null, now())$$,
+      'fixtures: cache em tres estados para o tenant A e um para o B'
+    ),
+    -- Gasto sem lead. E daqui que vinham as 98 linhas sem nome: o anuncio
+    -- aparece no gasto e nunca gerou touchpoint, entao a fila antiga —
+    -- que so nascia de ad_touchpoints — nunca o alcancava.
+    extensions.lives_ok(
+      $$insert into meta_insights_diario
+          (tenant_id, ad_id, dia, gasto_centavos)
+        values
+          ('11111111-1111-1111-1111-111111111111', 'ad_so_gasto',
+           '2026-09-18', 15000),
+          ('11111111-1111-1111-1111-111111111111', 'ad_cache_velho',
+           '2026-09-18', 9000),
+          ('11111111-1111-1111-1111-111111111111', 'ad_cache_completo',
+           '2026-09-18', 8000),
+          ('22222222-2222-2222-2222-222222222222', 'ad_gasto_b',
+           '2026-09-18', 7000)$$,
+      'fixtures: gasto de anuncios que nunca geraram lead'
     ),
 
     -- A fila e o que a funcao de enriquecimento varre. Tudo que ja foi
@@ -65,20 +95,57 @@ select tap from (
     -- Graph API repetindo anuncio que ja esta no cache.
     extensions.results_eq(
       $$select ad_id from touchpoints_sem_metadata order by ad_id$$,
-      array['ad_do_b'::text, 'ad_pend_1', 'ad_pend_2'],
-      'a fila traz so os anuncios que ainda faltam resolver'
+      array['ad_cache_velho'::text, 'ad_do_b', 'ad_gasto_b', 'ad_pend_1',
+            'ad_pend_2', 'ad_resolvido', 'ad_so_gasto'],
+      'a fila traz quem trouxe lead e quem so gastou, e mais ninguem'
     ),
+
+    -- O caso que motivou a mudanca: 98 das 103 linhas da view de
+    -- desempenho saiam sem nome porque o anuncio gastou e nunca gerou
+    -- touchpoint. Anuncio que gastou sem trazer ninguem e justamente o
+    -- que o cliente precisa identificar.
+    extensions.results_eq(
+      $$select ad_id from touchpoints_sem_metadata
+         where ad_id = 'ad_so_gasto'$$,
+      array['ad_so_gasto'::text],
+      'anuncio que so gastou, sem lead nenhum, entra na fila'
+    ),
+
+    -- Coluna nova em linha ja cacheada ficaria nula para sempre: a fila
+    -- excluia por construcao tudo que ja estivesse no cache.
+    extensions.results_eq(
+      $$select ad_id from touchpoints_sem_metadata
+         where ad_id = 'ad_cache_velho'$$,
+      array['ad_cache_velho'::text],
+      'linha em cache desde antes das colunas novas volta para a fila'
+    ),
+    extensions.is_empty(
+      $$select * from touchpoints_sem_metadata
+         where ad_id = 'ad_cache_completo'$$,
+      'linha antiga ja completa nao volta: nao se re-enriquece a toa'
+    ),
+    -- A outra metade da mesma moeda. Sem o corte por data, um anuncio
+    -- cujo conjunto realmente nao tem destination_type voltaria para a
+    -- fila a cada 10 minutos para sempre, queimando rate limit e
+    -- disputando as 50 vagas do lote com anuncio novo de verdade.
     extensions.is_empty(
       $$select * from touchpoints_sem_metadata where ad_id = 'ad_em_cache'$$,
-      'anuncio ja no cache sai da fila'
+      'anuncio recem-resolvido nao volta para a fila, mesmo sem as colunas'
     ),
-    extensions.is_empty(
-      $$select * from touchpoints_sem_metadata where ad_id = 'ad_resolvido'$$,
-      'touchpoint que ja tem campanha sai da fila'
-    ),
+
     extensions.is_empty(
       $$select * from touchpoints_sem_metadata where ad_id is null$$,
       'touchpoint sem anuncio nunca entra na fila'
+    ),
+    -- Quem preenche campaign_id no touchpoint e o proprio enriquecimento,
+    -- no mesmo ciclo em que grava o cache. Filtrar por ele barraria
+    -- justamente a linha velha que precisa voltar — por isso o que decide
+    -- e o cache, nao o touchpoint.
+    extensions.results_eq(
+      $$select ad_id from touchpoints_sem_metadata
+         where ad_id = 'ad_resolvido'$$,
+      array['ad_resolvido'::text],
+      'o que tira da fila e o cache gravado, nao a campanha no touchpoint'
     ),
 
     -- adset_id e campaign_id estao fora da trava de append-only
@@ -91,6 +158,13 @@ select tap from (
          where ad_id = 'ad_pend_1'$$,
       'enriquecimento preenche conjunto e campanha sem bater no append-only'
     ),
+    extensions.lives_ok(
+      $$insert into ad_metadata_cache
+          (ad_id, tenant_id, ad_name, act_id, destination_type)
+        values ('ad_pend_1', '11111111-1111-1111-1111-111111111111',
+                'Criativo resolvido agora', 'act_1', 'WHATSAPP')$$,
+      'enriquecimento grava o cache do anuncio que acabou de resolver'
+    ),
     extensions.is_empty(
       $$select * from touchpoints_sem_metadata where ad_id = 'ad_pend_1'$$,
       'anuncio resolvido sai da fila'
@@ -99,7 +173,7 @@ select tap from (
     -- Isolamento. A view roda com security_invoker = true; sem a flag ela
     -- executaria com o privilegio de quem a criou (postgres, que tem
     -- bypassrls) e devolveria a fila de todos os clientes a qualquer um
-    -- que consultasse. Verificado por mutacao: desligando a flag, as duas
+    -- que consultasse. Verificado por mutacao: desligando a flag, as
     -- assercoes abaixo falham.
     -- A PK era so ad_id, global. A tabela tem tenant_id (o RLS precisa),
     -- mas a chave nao o incluia — o schema afirmava uma unicidade que nao
@@ -127,16 +201,25 @@ select tap from (
       '{"tenant_id":"11111111-1111-1111-1111-111111111111"}', true)),
     extensions.results_eq(
       $$select ad_id from touchpoints_sem_metadata order by ad_id$$,
-      array['ad_pend_2'::text],
+      array['ad_cache_velho'::text, 'ad_pend_2', 'ad_resolvido',
+            'ad_so_gasto'],
       'tenant A enxerga apenas a propria fila'
     ),
     extensions.is_empty(
       $$select * from touchpoints_sem_metadata where ad_id = 'ad_do_b'$$,
       'tenant A nao alcanca a fila do tenant B nem filtrando por ela'
     ),
+    -- A origem nova precisa do mesmo isolamento: meta_insights_diario
+    -- entrou na view, e sem RLS valendo ali o gasto do outro cliente
+    -- apareceria na fila deste.
+    extensions.is_empty(
+      $$select * from touchpoints_sem_metadata where ad_id = 'ad_gasto_b'$$,
+      'o gasto do tenant B nao aparece na fila do tenant A'
+    ),
     extensions.results_eq(
       $$select ad_id from ad_metadata_cache order by ad_id$$,
-      array['ad_compartilhado'::text, 'ad_em_cache'::text],
+      array['ad_cache_completo'::text, 'ad_cache_velho', 'ad_compartilhado',
+            'ad_em_cache', 'ad_pend_1'],
       'tenant A le so o proprio cache, inclusive do ad_id que o B tambem tem'
     ),
     extensions.is_empty(
