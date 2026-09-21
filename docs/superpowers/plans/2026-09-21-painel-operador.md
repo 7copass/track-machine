@@ -14,8 +14,21 @@ navegador, então a chave nunca entra no bundle. Sem autenticação e sem RLS
 porque é a máquina do operador — quando virar painel de cliente, troca-se a
 chave por um JWT com `tenant_id` e o RLS volta a valer, sem mudar tela.
 
-**Stack:** Next.js 15 (App Router), React 19, TypeScript, Vitest, SVG inline
-para o gráfico.
+**Stack:** Next.js (App Router, versão `latest` — hoje 16), React, TypeScript,
+Vitest, SVG inline para o gráfico.
+
+> **A versão não está fixada de propósito**, e isso tem consequência: o
+> scaffold gera `painel/AGENTS.md` com a orientação do próprio Next
+> avisando que a versão atual tem mudanças de API e mandando ler os docs
+> embarcados em `node_modules/next/dist/docs/` antes de escrever código.
+> Esse arquivo é reescrito pelo `next dev` a cada execução.
+>
+> **Mantenha os dois arquivos que o scaffold cria** (`AGENTS.md` e o
+> `CLAUDE.md` que aponta para ele). Eles não foram pedidos, mas fazem
+> trabalho real: este plano foi escrito assumindo Next 15, e foi esse aviso
+> que fez a Tarefa 1 conferir a documentação antes de usar
+> `export const dynamic`. Apagá-los só reintroduz a alteração não
+> commitada e tira a proteção.
 
 **Spec:** `docs/superpowers/specs/2026-09-21-painel-operador-design.md`
 
@@ -166,10 +179,14 @@ export const dynamic = "force-dynamic";
 
 export default async function Pagina() {
   const db = servidor();
+  // Sem limite: a view tem alguns milhares de linhas para 90 dias, e
+  // comparar dois `LIMIT` sem `ORDER BY` compararia dois subconjuntos
+  // arbitrarios — que coincidem enquanto o plano de execucao for o mesmo
+  // e divergem sem aviso quando deixar de ser.
   const { data, error } = await db
     .from("desempenho_por_anuncio")
     .select("gasto_centavos")
-    .limit(1000);
+    .limit(50000);
 
   if (error) {
     return <pre style={{ padding: 32 }}>Erro: {error.message}</pre>;
@@ -204,7 +221,7 @@ from run_pgtap import carregar_env, executar
 carregar_env()
 ok, r = executar('''select count(*)::int linhas,
   round(sum(gasto_centavos)/100.0,2) gasto
-  from (select gasto_centavos from desempenho_por_anuncio limit 1000) t''')
+  from desempenho_por_anuncio''')
 print(r)
 "
 ```
@@ -213,12 +230,53 @@ print(r)
 
 ```bash
 cd painel && npm run build
-grep -rl "$(grep SUPABASE_SERVICE_ROLE_KEY .env.local | cut -d= -f2 | cut -c1-20)" .next/static/ 2>/dev/null \
-  && echo "⚠ CHAVE NO BUNDLE" || echo "✓ chave não está no bundle do cliente"
+
+CHAVE=$(grep '^SUPABASE_SERVICE_ROLE_KEY=' .env.local | cut -d= -f2-)
+
+# Controle: o grep precisa achar a chave onde ela de fato esta. Sem isso,
+# um padrao vazio devolveria "✓" sem ter procurado nada.
+grep -qF "$CHAVE" .env.local \
+  && echo "controle: o grep encontra a chave em .env.local ✓" \
+  || { echo "✗ o proprio controle falhou — a verificacao abaixo nao vale"; exit 1; }
+
+# grep -F com a chave INTEIRA. Usar um prefixo seria inutil: os primeiros
+# 20 caracteres de qualquer JWT sao "eyJhbGciOiJIUzI1NiIs", o cabecalho
+# {"alg":"HS256","typ":"JWT"} — identico na chave anonima, que e publica
+# por desenho. O check gritaria falso alarme no dia em que o painel do
+# cliente puser a anon key na tela, e check que grita a toa acaba
+# desligado.
+grep -rlF "$CHAVE" .next/ 2>/dev/null \
+  && echo "⚠ CHAVE NO BUNDLE" \
+  || echo "✓ a chave de servico nao aparece em nenhum arquivo do build"
 ```
 
-Esperado: `✓`. Se falhar, algum componente de cliente está importando o
-servidor — o `server-only` deveria ter quebrado o build antes disso.
+Esperado: o controle passa e a chave não aparece.
+
+- [ ] **Passo 6b: Provar que o `server-only` realmente barra**
+
+O passo acima passa mesmo se o `server-only` não estiver fazendo nada —
+ele só constata ausência. Para provar que a barreira existe, force o caso
+que ela deve impedir:
+
+```bash
+cd painel
+cat > src/app/_vazamento.tsx <<'TSX'
+"use client";
+import { servidor } from "@/lib/supabase";
+export default function X() { return <div>{typeof servidor}</div>; }
+TSX
+
+npm run build 2>&1 | grep -i "server-only" \
+  && echo "✓ a barreira funciona: o build recusou" \
+  || echo "⚠ O BUILD PASSOU — a barreira nao esta fazendo nada"
+
+rm src/app/_vazamento.tsx && npm run build >/dev/null 2>&1
+```
+
+Esperado: `'server-only' cannot be imported from a Client Component module`.
+
+Se o build **passar**, a única proteção automática do desenho não existe, e
+a chave de serviço pode chegar ao navegador no primeiro descuido.
 
 - [ ] **Passo 7: Commit**
 
@@ -594,7 +652,15 @@ export type LinhaAnuncio = {
   cpl: number | null;
 };
 
-/** Data de corte do período, no formato que a coluna `dia` usa. */
+/**
+ * Data de corte do período, no formato que a coluna `dia` usa.
+ *
+ * Calculado em UTC. A conferência do Passo 6 usa `current_date` do banco,
+ * que segue o fuso dele — perto da virada do dia os dois discordam de um
+ * dia inteiro, e a divergência parece bug de agregação quando é só de
+ * referencial. Se isso acontecer, rode a conferência com
+ * `(now() at time zone 'UTC')::date - N` em vez de `current_date - N`.
+ */
 function desde(dias: number): string {
   const d = new Date();
   d.setUTCDate(d.getUTCDate() - dias);
@@ -726,13 +792,19 @@ from run_pgtap import carregar_env, executar
 carregar_env()
 ok, r = executar('''select sum(gasto_centavos)::bigint gasto, sum(leads)::bigint leads,
   count(distinct ad_id)::int anuncios
-  from desempenho_por_anuncio where dia >= current_date - 90''')
+  from desempenho_por_anuncio
+ where dia >= (now() at time zone 'UTC')::date - 90''')
 print('  SQL direto:', r[0])
 "
 ```
 
 Compare com o que o teste `resumo` viu. Divergência aqui significa que a
 agregação no TypeScript não reproduz a do Postgres.
+
+O corte usa `(now() at time zone 'UTC')::date` e não `current_date` de
+propósito: `desde()` no TypeScript calcula em UTC, e `current_date` segue o
+fuso do banco. Perto da virada do dia os dois discordam de um dia inteiro,
+e a divergência pareceria erro de agregação quando é só de referencial.
 
 > **Sobre o `cache` do React:** ele deduplica por renderização, não entre
 > requisições. Nos testes do Vitest, cada chamada busca de novo — é por
