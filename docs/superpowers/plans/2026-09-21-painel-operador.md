@@ -1632,19 +1632,26 @@ publicado: hoje a unica coisa que o protege e ser localhost."
 ## Ordem de Execução
 
 ```
-Tarefa 1  projeto e conexão       ─┐
-Tarefa 2  formatação              ─┤ independentes entre si
-Tarefa 3  consultas               ─┘ (2 não depende de 1)
+Tarefa 1  projeto e conexão       ← precisa vir primeiro: cria painel/
+Tarefa 2  formatação              ─┐ as duas criam arquivos dentro de
+Tarefa 3  consultas               ─┘ painel/, e a 3 usa servidor() da 1
 Tarefa 4  tokens e cards          ← depende de 2 e 3
-Tarefa 5  gráfico                 ← depende de 2, 3 e 4
-Tarefa 6  tabela                  ← depende de 2, 3 e 4
+Tarefa 5  gráfico                 ─┐ tocam arquivos diferentes, mas as
+Tarefa 6  tabela                  ─┘ duas modificam page.tsx
 Tarefa 7  período e atualizar     ← depende de todas
 ```
 
-As Tarefas 5 e 6 tocam arquivos diferentes e podem rodar em paralelo,
-desde que cada uma commite só os próprios caminhos — as duas modificam
-`page.tsx`, então quem chegar segundo precisa reler o arquivo antes de
-editar.
+**Nada roda antes da Tarefa 1**, porque é ela que cria o diretório
+`painel/` com `package.json` — sem ele não há onde instalar o Vitest nem
+onde colocar `src/lib/`.
+
+Depois dela, **as Tarefas 2 e 3 são independentes entre si** e podem rodar
+em paralelo: a 2 é módulo puro, a 3 fala com o banco, e não compartilham
+arquivo.
+
+As Tarefas 5 e 6 também podem, com uma ressalva: **as duas modificam
+`page.tsx`**. Quem chegar em segundo precisa reler o arquivo antes de
+editar, ou vai sobrescrever o import da outra.
 
 ## Cobertura da Spec
 
