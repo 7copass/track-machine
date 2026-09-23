@@ -1450,36 +1450,214 @@ O azul foi validado contra a superficie escura antes de entrar."
 
 ---
 
-### Tarefa 6: Tabela de anúncios
+### Tarefa 6: Tabela de criativos
 
 **Arquivos:**
-- Criar: `painel/src/componentes/TabelaAnuncios.tsx`
+- Modificar: `painel/src/lib/consultas.ts`
+- Criar: `painel/tests/criativos.test.ts`
+- Criar: `painel/src/componentes/TabelaCriativos.tsx`
 - Modificar: `painel/src/app/page.tsx`
 
 **Interfaces:**
 - Consome: `LinhaAnuncio`, `anuncios` (Tarefa 3); `reais`, `numero` (Tarefa 2).
-- Produz: `<TabelaAnuncios linhas={LinhaAnuncio[]} />`.
+- Produz: `criativos(LinhaAnuncio[]) → LinhaCriativo[]`, `<TabelaCriativos />`.
 
-- [ ] **Passo 1: Escrever o componente**
+> **Por que agrupar por nome e nao por `ad_id`.**
+>
+> Medido na base real, com os 840 anuncios ja enriquecidos:
+>
+> | chave | linhas | quantas ficam ambiguas |
+> |---|---|---|
+> | `ad_id` | 840 | nenhuma, mas ilegivel |
+> | nome | 249 | 0 |
+> | nome + conta | — | 742 de 840 |
+> | nome + campanha + conjunto | — | 291 de 840 |
+>
+> `AD03 - IMG - INFOR` aparece **17 vezes na mesma conta**, em campanhas e
+> conjuntos diferentes. Nenhuma combinacao de rotulos legiveis separa os
+> 840: so o `ad_id`, que nao diz nada a um humano.
+>
+> Agrupar por nome nao perde informacao — reconhece que o mesmo criativo
+> reusado em varios conjuntos e **um** criativo. E a pergunta que o
+> operador faz de verdade: "esse criativo funciona?", nao "esse objeto de
+> anuncio funciona?". A coluna `vezes` mantem visivel quantos objetos
+> entraram em cada linha.
 
-Criar `painel/src/componentes/TabelaAnuncios.tsx`:
+- [ ] **Passo 1: Escrever os testes primeiro** (devem falhar)
+
+Criar `painel/tests/criativos.test.ts`:
+
+```ts
+import { describe, expect, it } from "vitest";
+import { criativos, type LinhaAnuncio } from "@/lib/consultas";
+
+function anuncio(p: Partial<LinhaAnuncio>): LinhaAnuncio {
+  return {
+    adId: "1", nome: "AD01", campanha: "C", conta: "act_1",
+    destino: "WHATSAPP", gasto: 0, leads: 0, cpl: null, ...p,
+  };
+}
+
+describe("criativos", () => {
+  it("soma gasto e leads de anuncios com o mesmo nome", () => {
+    const r = criativos([
+      anuncio({ adId: "1", nome: "AD03", gasto: 1000, leads: 2 }),
+      anuncio({ adId: "2", nome: "AD03", gasto: 500, leads: 1 }),
+    ]);
+    expect(r).toHaveLength(1);
+    expect(r[0].gasto).toBe(1500);
+    expect(r[0].leads).toBe(3);
+    expect(r[0].vezes).toBe(2);
+  });
+
+  // O erro que este teste existe para pegar: media dos CPLs em vez de CPL
+  // do total. Aqui a media daria 45500 (R$ 455,00) e o certo e 9090
+  // (R$ 90,90) — um erro de 5x que passaria despercebido, porque os dois
+  // numeros sao plausiveis.
+  it("recalcula o CPL sobre o total, nao a media dos CPLs", () => {
+    const r = criativos([
+      anuncio({ adId: "1", nome: "AD03", gasto: 10000, leads: 10 }),
+      anuncio({ adId: "2", nome: "AD03", gasto: 90000, leads: 1 }),
+    ]);
+    expect(r[0].cpl).toBe(Math.floor(100000 / 11));
+    expect(r[0].cpl).not.toBe((1000 + 90000) / 2);
+  });
+
+  // Anuncio novo aparece nos insights antes do enriquecimento rodar. Se
+  // agrupasse por nome nulo, todos os anuncios novos de todas as contas
+  // viravam UMA linha somando gastos que nao tem relacao entre si.
+  it("nao junta anuncios sem nome numa linha so", () => {
+    const r = criativos([
+      anuncio({ adId: "1", nome: null, gasto: 100 }),
+      anuncio({ adId: "2", nome: null, gasto: 200 }),
+    ]);
+    expect(r).toHaveLength(2);
+    expect(r.map((c) => c.gasto).sort((a, b) => a - b)).toEqual([100, 200]);
+  });
+
+  it("mostra a campanha quando e uma so, e a contagem quando sao varias", () => {
+    const uma = criativos([
+      anuncio({ adId: "1", nome: "AD03", campanha: "VAGA" }),
+      anuncio({ adId: "2", nome: "AD03", campanha: "VAGA" }),
+    ]);
+    expect(uma[0].campanha).toBe("VAGA");
+    expect(uma[0].campanhas).toBe(1);
+
+    const varias = criativos([
+      anuncio({ adId: "1", nome: "AD03", campanha: "VAGA" }),
+      anuncio({ adId: "2", nome: "AD03", campanha: "OUTRA" }),
+    ]);
+    expect(varias[0].campanha).toBeNull();
+    expect(varias[0].campanhas).toBe(2);
+  });
+
+  // Se o mesmo criativo rodou numa campanha de mensagem e numa de visita
+  // ao perfil, os leads vieram da primeira e sao reais. Esconder o numero
+  // atras de um traco apagaria lead que existe.
+  it("gera lead se qualquer membro do grupo gera", () => {
+    const r = criativos([
+      anuncio({ adId: "1", nome: "AD03", destino: "INSTAGRAM_PROFILE" }),
+      anuncio({ adId: "2", nome: "AD03", destino: "WHATSAPP", leads: 4 }),
+    ]);
+    expect(r[0].geraLead).toBe(true);
+    expect(r[0].leads).toBe(4);
+  });
+
+  it("nao gera lead quando nenhum membro gera", () => {
+    const r = criativos([
+      anuncio({ adId: "1", nome: "AD03", destino: "INSTAGRAM_PROFILE" }),
+      anuncio({ adId: "2", nome: "AD03", destino: "INSTAGRAM_PROFILE" }),
+    ]);
+    expect(r[0].geraLead).toBe(false);
+  });
+
+  it("ordena por gasto, maior primeiro", () => {
+    const r = criativos([
+      anuncio({ adId: "1", nome: "A", gasto: 10 }),
+      anuncio({ adId: "2", nome: "B", gasto: 900 }),
+      anuncio({ adId: "3", nome: "C", gasto: 50 }),
+    ]);
+    expect(r.map((c) => c.nome)).toEqual(["B", "C", "A"]);
+  });
+});
+```
+
+- [ ] **Passo 2: Implementar `criativos` em `consultas.ts`**
+
+```ts
+export type LinhaCriativo = {
+  nome: string | null;
+  /** Quantos objetos de anúncio entraram nesta linha. */
+  vezes: number;
+  /** A campanha, quando é uma só; `null` quando o criativo rodou em várias. */
+  campanha: string | null;
+  campanhas: number;
+  contas: number;
+  /**
+   * Se faz sentido cobrar lead deste criativo.
+   *
+   * Decidido no agrupamento e não na tela, porque o grupo pode misturar
+   * destinos: o mesmo criativo pode ter rodado numa campanha de mensagem
+   * e numa de visita ao perfil.
+   */
+  geraLead: boolean;
+  gasto: number;
+  leads: number;
+  cpl: number | null;
+};
+
+const DESTINOS_COM_LEAD = new Set([
+  "WHATSAPP",
+  "MESSAGING_INSTAGRAM_DIRECT_WHATSAPP",
+]);
+
+export function criativos(linhas: LinhaAnuncio[]): LinhaCriativo[] {
+  // Anúncio sem nome fica sozinho, na chave do próprio id: agrupar todos
+  // os nulos juntos somaria gastos de anúncios sem relação nenhuma.
+  const chave = (l: LinhaAnuncio) =>
+    l.nome === null ? `id:${l.adId}` : `nome:${l.nome}`;
+
+  const grupos = new Map<string, LinhaAnuncio[]>();
+  for (const l of linhas) {
+    const k = chave(l);
+    const g = grupos.get(k);
+    if (g) g.push(l);
+    else grupos.set(k, [l]);
+  }
+
+  return [...grupos.values()]
+    .map((g) => {
+      const gasto = g.reduce((s, l) => s + l.gasto, 0);
+      const leads = g.reduce((s, l) => s + l.leads, 0);
+      const camps = new Set(g.map((l) => l.campanha));
+      return {
+        nome: g[0].nome,
+        vezes: g.length,
+        campanha: camps.size === 1 ? g[0].campanha : null,
+        campanhas: camps.size,
+        contas: new Set(g.map((l) => l.conta)).size,
+        geraLead: g.some(
+          (l) => l.destino !== null && DESTINOS_COM_LEAD.has(l.destino),
+        ),
+        gasto,
+        leads,
+        // Sobre o total. A média dos CPLs de cada anúncio dá outro número,
+        // e o errado: pesa igual um anúncio de R$ 1 e um de R$ 900.
+        cpl: leads > 0 ? Math.floor(gasto / leads) : null,
+      };
+    })
+    .sort((a, b) => b.gasto - a.gasto);
+}
+```
+
+- [ ] **Passo 3: Escrever o componente**
+
+Criar `painel/src/componentes/TabelaCriativos.tsx`:
 
 ```tsx
 import type { CSSProperties } from "react";
-import type { LinhaAnuncio } from "@/lib/consultas";
+import type { LinhaCriativo } from "@/lib/consultas";
 import { numero, reais } from "@/lib/formato";
-
-/**
- * Qual métrica faz sentido para cada tipo de campanha.
- *
- * Campanha de visita ao perfil não tem lead por definição — mostrar "0
- * leads" nela sugeriria fracasso onde não há nada a medir. `WHATSAPP` e
- * `MESSAGING_INSTAGRAM_DIRECT_WHATSAPP` são as que geram lead.
- */
-function geraLead(destino: string | null): boolean {
-  return destino === "WHATSAPP" ||
-    destino === "MESSAGING_INSTAGRAM_DIRECT_WHATSAPP";
-}
 
 const th: CSSProperties = {
   textAlign: "left",
@@ -1497,7 +1675,7 @@ const td: CSSProperties = {
   borderBottom: "1px solid var(--borda)",
 };
 
-export function TabelaAnuncios({ linhas }: { linhas: LinhaAnuncio[] }) {
+export function TabelaCriativos({ linhas }: { linhas: LinhaCriativo[] }) {
   return (
     <div className="cartao" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ padding: "16px 20px 8px" }}>
@@ -1507,7 +1685,7 @@ export function TabelaAnuncios({ linhas }: { linhas: LinhaAnuncio[] }) {
           letterSpacing: "0.08em",
           textTransform: "uppercase",
         }}>
-          Anúncios
+          Criativos
         </span>
         <span style={{ color: "var(--texto-fraco)", fontSize: 11, marginLeft: 8 }}>
           {numero(linhas.length)} · por gasto
@@ -1520,9 +1698,9 @@ export function TabelaAnuncios({ linhas }: { linhas: LinhaAnuncio[] }) {
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
           <thead>
             <tr>
-              <th style={th}>Anúncio</th>
-              <th style={th}>Campanha</th>
-              <th style={th}>Conta</th>
+              <th style={th}>Criativo</th>
+              <th style={th}>Onde rodou</th>
+              <th style={{ ...th, textAlign: "right" }}>Vezes</th>
               <th style={{ ...th, textAlign: "right" }}>Gasto</th>
               <th style={{ ...th, textAlign: "right" }}>Leads</th>
               <th style={{ ...th, textAlign: "right" }}>CPL</th>
@@ -1530,23 +1708,24 @@ export function TabelaAnuncios({ linhas }: { linhas: LinhaAnuncio[] }) {
           </thead>
           <tbody>
             {linhas.map((l) => (
-              <tr key={l.adId}>
+              <tr key={`${l.nome ?? ""}|${l.gasto}|${l.vezes}`}>
                 <td style={td}>
                   {l.nome ?? (
-                    <span style={{ color: "var(--texto-fraco)" }}>
-                      {l.adId}
-                    </span>
+                    <span style={{ color: "var(--texto-fraco)" }}>sem nome ainda</span>
                   )}
                 </td>
                 <td style={{ ...td, color: "var(--texto-secundario)" }}>
-                  {l.campanha ?? "—"}
+                  {l.campanha ?? `${numero(l.campanhas)} campanhas`}
                 </td>
-                {/* Sem esta coluna, dois anuncios homonimos em contas
-                    diferentes viram duas linhas identicas no rotulo — e o
-                    operador conclui que o painel duplicou. Acontece de
-                    verdade: ha dois "ad01" na campanha VAGA. */}
-                <td style={{ ...td, color: "var(--texto-fraco)", fontSize: 11 }}>
-                  {l.conta?.replace(/^act_/, "") ?? "—"}
+                {/* Sem esta coluna, somar 17 anuncios numa linha so seria
+                    invisivel — o operador veria um gasto alto e nao saberia
+                    de onde veio. */}
+                <td className="numero" style={{
+                  ...td,
+                  textAlign: "right",
+                  color: l.vezes > 1 ? "var(--texto-secundario)" : "var(--texto-fraco)",
+                }}>
+                  {l.vezes > 1 ? numero(l.vezes) : "—"}
                 </td>
                 <td className="numero" style={{ ...td, textAlign: "right" }}>
                   {reais(l.gasto)}
@@ -1556,10 +1735,10 @@ export function TabelaAnuncios({ linhas }: { linhas: LinhaAnuncio[] }) {
                   textAlign: "right",
                   // Zero lead fica cinza, mas continua sendo um zero.
                   // "Gastou e nao trouxe ninguem" e a informacao que o
-                  // operador mais precisa ver.
+                  // operador mais precisa ver; traco leria "nao se aplica".
                   color: l.leads > 0 ? "var(--texto)" : "var(--texto-fraco)",
                 }}>
-                  {geraLead(l.destino) ? numero(l.leads) : "—"}
+                  {l.geraLead ? numero(l.leads) : "—"}
                 </td>
                 <td className="numero" style={{
                   ...td,
@@ -1578,13 +1757,14 @@ export function TabelaAnuncios({ linhas }: { linhas: LinhaAnuncio[] }) {
 }
 ```
 
-- [ ] **Passo 2: Montar na página**
+- [ ] **Passo 4: Montar na página**
 
-Acrescentar em `painel/src/app/page.tsx`:
+Em `painel/src/app/page.tsx` — **reler o arquivo antes de editar**, a
+Tarefa 5 também mexe nele:
 
 ```tsx
-import { TabelaAnuncios } from "@/componentes/TabelaAnuncios";
-import { anuncios, gastoPorDia, resumo } from "@/lib/consultas";
+import { TabelaCriativos } from "@/componentes/TabelaCriativos";
+import { anuncios, criativos, gastoPorDia, resumo } from "@/lib/consultas";
 ```
 
 ```tsx
@@ -1594,39 +1774,39 @@ import { anuncios, gastoPorDia, resumo } from "@/lib/consultas";
 ```
 
 ```tsx
-        <TabelaAnuncios linhas={linhas} />
+        <TabelaCriativos linhas={criativos(linhas)} />
 ```
 
-- [ ] **Passo 3: Olhar e conferir**
+- [ ] **Passo 5: Olhar e conferir na base real**
 
-Três coisas:
+1. A tabela tem **249 linhas**, não 840
+2. A primeira linha é a de maior gasto
+3. `AD01` aparece **uma vez**, com `13` na coluna Vezes — não treze vezes
+4. `ad01` da campanha `VAGA` mostra **29 leads** e CPL de R$ 8,44
+5. Criativo de campanha de mensagem sem lead mostra **`0`** em cinza, não
+   um traço
+6. Criativo só de visita ao perfil mostra traço nas colunas de lead e CPL
+7. A soma da coluna Gasto bate com o card de gasto total
 
-1. A primeira linha é a de maior gasto
-2. Anúncio de campanha de mensagem sem lead mostra **`0`** em cinza, não um
-   traço — traço significaria "não se aplica"
-3. Campanha de visita ao perfil mostra traço nas duas colunas, porque lead
-   não se aplica a ela
-4. **Os dois `ad01` aparecem como linhas distintas, com contas diferentes.**
-   São anúncios diferentes com o mesmo nome, um em cada conta — sem a
-   coluna de conta pareceriam duplicação
-
-- [ ] **Passo 4: Commit**
+- [ ] **Passo 6: Commit**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
-git add painel/src/componentes/TabelaAnuncios.tsx painel/src/app/page.tsx
-git commit -m "Tabela de anuncios, distinguindo zero de nao se aplica
+git add painel/src/lib/consultas.ts painel/tests/criativos.test.ts \
+        painel/src/componentes/TabelaCriativos.tsx painel/src/app/page.tsx
+git commit -m "Tabela por criativo, porque o ad_id nao e legivel
 
-Anuncio de campanha de mensagem sem lead mostra 0 em cinza, nao um
-traco: gastou e nao trouxe ninguem e a informacao que o operador mais
-precisa ver, e traco leria como 'nao se aplica'.
+Medido na base: 742 dos 840 anuncios sao indistinguiveis por nome +
+conta, e 291 continuam indistinguiveis mesmo somando campanha e
+conjunto. AD03 - IMG - INFOR aparece 17 vezes na mesma conta. Nenhum
+rotulo legivel separa os 840 — so o ad_id, que nao diz nada.
 
-Campanha de visita ao perfil mostra traco de verdade, porque lead nao
-se aplica a ela — e destination_type e o que separa as duas, ja que o
-objetivo e OUTCOME_ENGAGEMENT nas duas.
+Agrupar por nome da 249 linhas sem ambiguidade nenhuma, e responde a
+pergunta que o operador faz: esse criativo funciona. A coluna Vezes
+mantem visivel quantos objetos entraram em cada linha.
 
-A tabela rola dentro do proprio cartao; sem isso a pagina inteira
-rola na horizontal em tela estreita."
+O CPL do grupo sai do total, nao da media dos CPLs: a media pesa igual
+um anuncio barato e um caro."
 ```
 
 ---

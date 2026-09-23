@@ -55,7 +55,7 @@ Isso tem consequência de interface, tratada na Seção 7.
 ## 4. Escopo
 
 **Dentro:**
-- Uma tela: números do período, gasto por dia, e tabela de anúncios
+- Uma tela: números do período, gasto por dia, e tabela de criativos
 - Seletor de período (7, 30, 90 dias)
 - Botão de atualizar, acionando a sincronização manual já construída
 - Carimbo de última atualização
@@ -183,6 +183,40 @@ order by gasto desc;
 Somar médias produz número errado — a mesma regra que vale desde o primeiro
 dia do projeto.
 
+### A tabela agrupa por nome de criativo, não por `ad_id`
+
+A consulta acima devolve uma linha por `ad_id`. **A tela não mostra essas
+linhas diretamente**: agrupa por `ad_name` antes de renderizar.
+
+Medido na base, com os 840 anúncios do período já enriquecidos:
+
+| chave | linhas | quantas ficam ambíguas |
+|---|---|---|
+| `ad_id` | 840 | nenhuma, mas o rótulo é ilegível |
+| nome | 249 | 0 |
+| nome + conta | — | 742 de 840 |
+| nome + campanha + conjunto | — | 291 de 840 |
+
+`AD03 - IMG - INFOR` aparece **17 vezes na mesma conta**, em campanhas e
+conjuntos diferentes — é o mesmo criativo reusado, que é a prática normal
+na Meta. Nenhuma combinação de rótulos legíveis separa os 840 anúncios: só
+o `ad_id`, que não diz nada a um humano.
+
+Agrupar por nome não esconde nada, porque a coluna **Vezes** mostra quantos
+objetos de anúncio entraram em cada linha. E responde a pergunta que o
+operador faz de verdade — *esse criativo funciona?* — em vez de *esse
+objeto de anúncio funciona?*.
+
+Duas regras do agrupamento que existem porque o contrário seria
+silenciosamente errado:
+
+- **Anúncio sem nome fica sozinho, na chave do próprio `ad_id`.** Anúncio
+  novo aparece nos insights antes do enriquecimento rodar; agrupar os nulos
+  juntos somaria gastos de anúncios sem relação nenhuma.
+- **O grupo gera lead se qualquer membro gerar.** O mesmo criativo pode ter
+  rodado numa campanha de mensagem e numa de visita ao perfil; esconder o
+  número atrás de um traço apagaria lead que existe.
+
 **`destination_type` decide qual métrica faz sentido por linha:** campanha
 de mensagem mostra custo por lead; campanha de visita ao perfil não tem lead
 e não deve exibir CPL nenhum.
@@ -228,14 +262,15 @@ O resto é visual, e visual se confere olhando.
 | # | Questão | Decide quando |
 |---|---|---|
 | B2-Q1 | Exibir os recortes de demografia e posicionamento — 64 mil linhas no banco, nenhuma na tela | Fatia D, quando os insights definirem o que vale mostrar |
-| B2-Q2 | Paginação ou busca na tabela de anúncios | Se o volume incomodar na prática |
+| B2-Q2 | Paginação ou busca na tabela de criativos | Se o volume incomodar na prática |
 | B2-Q3 | Comparação com o período anterior nos cards | Quando houver 60 dias de lead acumulado; hoje não há o que comparar |
 
 ## 13. Critérios de conclusão
 
 - `npm run dev` sobe o painel em `localhost:3000`
 - Os quatro cards batem com a consulta SQL direta, rodada no mesmo instante
-- A tabela lista todos os anúncios do período, ordenados por gasto, com nome legível
+- A tabela lista os criativos do período, ordenados por gasto, sem duas linhas
+  com o mesmo rótulo
 - Anúncio sem lead aparece com `0 leads`, não com traço
 - Trocar o período muda os três blocos juntos
 - O botão de atualizar dispara a sincronização e mostra a trava quando ela recusar
