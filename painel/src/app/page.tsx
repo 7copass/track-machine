@@ -1,24 +1,22 @@
-import { servidor } from "@/lib/supabase";
+import { Cards } from "@/componentes/Cards";
+import { AvisoCaptura } from "@/componentes/AvisoCaptura";
+import { resumo } from "@/lib/consultas";
 
 export const dynamic = "force-dynamic";
 
 export default async function Pagina() {
-  const db = servidor();
-  const { data, error } = await db
-    .from("desempenho_por_anuncio")
-    .select("gasto_centavos")
-    .limit(1000);
-
-  if (error) {
-    return <pre style={{ padding: 32 }}>Erro: {error.message}</pre>;
-  }
-
-  const total = (data ?? []).reduce((s, l) => s + Number(l.gasto_centavos), 0);
+  const r = await resumo(90);
 
   return (
-    <main style={{ padding: 32, fontFamily: "system-ui" }}>
-      <h1>Track Machine</h1>
-      <p>{data?.length} linhas · R$ {(total / 100).toFixed(2)}</p>
+    <main style={{ maxWidth: 1200, margin: "0 auto", padding: 32 }}>
+      <h1 style={{ fontSize: 20, fontWeight: 600, marginBottom: 24 }}>
+        Track Machine
+      </h1>
+
+      <div style={{ display: "grid", gap: 20 }}>
+        <AvisoCaptura desde="2026-09-18" />
+        <Cards resumo={r} />
+      </div>
     </main>
   );
 }

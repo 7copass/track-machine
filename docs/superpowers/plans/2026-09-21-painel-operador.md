@@ -1063,7 +1063,7 @@ tem cpl nulo, nunca infinito."
 - Consome: `resumo`, `Resumo` (Tarefa 3); `reais`, `numero` (Tarefa 2).
 - Produz: `<Cards resumo={...} />`, `<AvisoCaptura desde="2026-09-18" />`.
 
-- [ ] **Passo 1: Escrever os tokens**
+- [x] **Passo 1: Escrever os tokens**
 
 Substituir `painel/src/app/globals.css`:
 
@@ -1115,7 +1115,7 @@ body {
 .numero { font-variant-numeric: tabular-nums; }
 ```
 
-- [ ] **Passo 2: Escrever o componente dos cards**
+- [x] **Passo 2: Escrever o componente dos cards**
 
 Criar `painel/src/componentes/Cards.tsx`:
 
@@ -1157,7 +1157,7 @@ export function Cards({ resumo }: { resumo: Resumo }) {
 }
 ```
 
-- [ ] **Passo 3: Escrever o aviso**
+- [x] **Passo 3: Escrever o aviso**
 
 Criar `painel/src/componentes/AvisoCaptura.tsx`:
 
@@ -1194,7 +1194,7 @@ export function AvisoCaptura({ desde }: { desde: string }) {
 }
 ```
 
-- [ ] **Passo 4: Montar na página**
+- [x] **Passo 4: Montar na página**
 
 Substituir `painel/src/app/page.tsx`:
 
@@ -1223,7 +1223,7 @@ export default async function Pagina() {
 }
 ```
 
-- [ ] **Passo 5: Olhar**
+- [x] **Passo 5: Olhar**
 
 ```bash
 cd painel && npm run dev
@@ -1232,7 +1232,7 @@ cd painel && npm run dev
 Abra `localhost:3000`. Esperado: quatro cards com os números do período de
 90 dias, e o aviso acima deles. Confira que o gasto bate com o card.
 
-- [ ] **Passo 6: Commit**
+- [x] **Passo 6: Commit**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
