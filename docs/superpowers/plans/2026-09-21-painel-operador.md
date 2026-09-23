@@ -34,6 +34,16 @@ Vitest, SVG inline para o gráfico.
 
 ## Restrições Globais
 
+- **O PostgREST corta TODA resposta em 1000 linhas, em silêncio.** O teto é
+  do servidor: `.limit(50000)` é aceito sem reclamar e devolve 1000 do mesmo
+  jeito. Medido — `Content-Range: 0-999/4163`. Qualquer leitura que possa
+  passar de 1000 linhas **precisa paginar e conferir a contagem**, nunca
+  confiar num `.limit()` grande.
+
+  E o modo como isso falha é o pior: a leitura truncada mantém a tela
+  **coerente consigo mesma** — a soma dos dias bate com a soma dos anúncios,
+  porque as duas saem das mesmas 1000 linhas. Medido: com leitura truncada,
+  **10 das 11 asserções deste plano ficavam verdes**.
 - **Nenhuma consulta ao Supabase no cliente.** Server Components apenas. Se
   algum dia uma consulta precisar do navegador, ela exige JWT e RLS.
 - **A chave de serviço vive em `painel/.env.local`**, que entra no
@@ -179,25 +189,37 @@ export const dynamic = "force-dynamic";
 
 export default async function Pagina() {
   const db = servidor();
-  // Sem limite: a view tem alguns milhares de linhas para 90 dias, e
-  // comparar dois `LIMIT` sem `ORDER BY` compararia dois subconjuntos
-  // arbitrarios — que coincidem enquanto o plano de execucao for o mesmo
-  // e divergem sem aviso quando deixar de ser.
-  const { data, error } = await db
+  // ATENCAO: esta leitura E TRUNCADA, e de proposito nesta tarefa.
+  //
+  // O PostgREST corta toda resposta em 1000 linhas, e a view tem 4.163.
+  // Pedir `.limit(50000)` nao ajuda — o teto e do servidor e ele devolve
+  // 1000 sem reclamar. O `Prefer: count=exact` abaixo e o que revela isso.
+  //
+  // Aqui serve, porque o objetivo desta tarefa e provar a CONEXAO, nao
+  // exibir numero certo. A leitura completa, paginada, chega na Tarefa 3.
+  const { data, error, count } = await db
     .from("desempenho_por_anuncio")
-    .select("gasto_centavos")
-    .limit(50000);
+    .select("gasto_centavos", { count: "exact" });
 
   if (error) {
     return <pre style={{ padding: 32 }}>Erro: {error.message}</pre>;
   }
 
   const total = (data ?? []).reduce((s, l) => s + Number(l.gasto_centavos), 0);
+  const truncado = (count ?? 0) > (data?.length ?? 0);
 
   return (
     <main style={{ padding: 32, fontFamily: "system-ui" }}>
       <h1>Track Machine</h1>
-      <p>{data?.length} linhas · R$ {(total / 100).toFixed(2)}</p>
+      <p>
+        {data?.length} de {count} linhas · R$ {(total / 100).toFixed(2)}
+      </p>
+      {truncado && (
+        <p style={{ color: "#f59e0b" }}>
+          Leitura truncada pelo teto do PostgREST — a paginação chega na
+          Tarefa 3. O valor acima NÃO é o gasto total.
+        </p>
+      )}
     </main>
   );
 }
@@ -209,8 +231,12 @@ export default async function Pagina() {
 cd painel && npm run dev
 ```
 
-Abra `http://localhost:3000`. Esperado: o número de linhas e um gasto em
-reais, batendo com esta consulta:
+Abra `http://localhost:3000`. Esperado: **`1000 de 4163 linhas`** e o aviso
+amarelo de leitura truncada — não o gasto total.
+
+Esse é o comportamento correto para esta tarefa: ela prova que a conexão
+funciona e **mostra na cara** que a leitura está incompleta, em vez de
+exibir um número plausível e errado. Confira o total com:
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
@@ -646,6 +672,15 @@ describe("anuncios", () => {
     }
   });
 
+  it("le a view inteira, nao so a primeira pagina do PostgREST", async () => {
+    // O teto de 1000 linhas e silencioso, e a leitura truncada mantem a
+    // tela coerente consigo mesma — cards, grafico e tabela saem das
+    // mesmas 1000 linhas e concordam entre si estando todos errados.
+    // Nenhuma das assercoes cruzadas pega isso; so a contagem absoluta.
+    const r = await resumo(90);
+    expect(r.anuncios).toBeGreaterThan(500);
+  });
+
   it("anuncios de contas diferentes com o mesmo nome sao linhas separadas", async () => {
     // O tenant real tem duas contas, e ha anuncios homonimos em cada uma:
     // dois "ad01" na campanha VAGA. Se a agregacao juntasse por nome em
@@ -727,6 +762,16 @@ export type Resumo = {
 
 export type PontoDia = { dia: string; gasto: number };
 
+type LinhaView = {
+  ad_id: string;
+  ad_name: string | null;
+  campaign_name: string | null;
+  destination_type: string | null;
+  dia: string;
+  gasto_centavos: string | number;
+  leads: string | number | null;
+};
+
 export type LinhaAnuncio = {
   adId: string;
   nome: string | null;
@@ -761,29 +806,100 @@ function desde(dias: number): string {
   return d.toISOString().slice(0, 10);
 }
 
+const TAMANHO_PAGINA = 1000;
+
+/**
+ * Lê TODAS as linhas de uma consulta, paginando.
+ *
+ * O PostgREST corta toda resposta em 1000 linhas e não avisa: `.limit()`
+ * maior é aceito e devolve 1000 do mesmo jeito. A view tem 4.163 linhas —
+ * sem paginar, o painel mostraria um quarto do gasto.
+ *
+ * E o modo como isso falha é traiçoeiro: a leitura truncada mantém a tela
+ * **coerente consigo mesma**, porque cards, gráfico e tabela saem das
+ * mesmas 1000 linhas. Nenhuma conferência cruzada pega isso.
+ *
+ * Por isso a função **levanta** quando a contagem não fecha, em vez de
+ * devolver o que conseguiu.
+ */
+async function lerTudo<T>(
+  rotulo: string,
+  buscar: (de: number, ate: number) => PromiseLike<{
+    data: T[] | null; count: number | null; error: { message: string } | null;
+  }>,
+): Promise<T[]> {
+  const todas: T[] = [];
+  let total: number | null = null;
+
+  for (let de = 0; ; ) {
+    const { data, count, error } = await buscar(de, de + TAMANHO_PAGINA - 1);
+    if (error) throw new Error(`Falha ao ler ${rotulo}: ${error.message}`);
+    if (count !== null) total = count;
+
+    const pagina = data ?? [];
+    todas.push(...pagina);
+    // Avança pelo que VEIO, não pelo que se pediu: se o teto do servidor
+    // baixar, um passo fixo de 1000 pularia linhas em silêncio.
+    de += pagina.length;
+
+    if (pagina.length === 0) break;
+    if (total !== null && todas.length >= total) break;
+  }
+
+  if (total !== null && todas.length !== total) {
+    throw new Error(
+      `Leitura incompleta de ${rotulo}: ${todas.length} de ${total} linhas.`,
+    );
+  }
+  return todas;
+}
+
 /**
  * Lê a view inteira do período — uma vez por carregamento.
  *
  * O `cache` do React deduplica dentro da mesma renderização: as três
  * funções abaixo chamam esta, e sem ele a página buscaria as mesmas
- * ~4 mil linhas **três vezes** para exibi-las uma. Com ele, a primeira
- * chamada busca e as outras duas recebem o mesmo resultado.
+ * ~4 mil linhas **três vezes** para exibi-las uma.
  *
- * Se o volume crescer a ponto de incomodar, o caminho é agregar no
- * Postgres — não paginar aqui.
+ * **A view não projeta `act_id`** — ela junta com `ad_accounts` só para
+ * descobrir o fuso com que datar os leads, e não carrega a conta para a
+ * saída. Pedir a coluna devolve erro do PostgREST, não `null`. Por isso a
+ * conta vem de uma segunda leitura, em `contaPorAnuncio()`.
  */
 const linhasDoPeriodo = cache(async function (dias: number) {
   const db = servidor();
-  const { data, error } = await db
-    .from("desempenho_por_anuncio")
-    .select("ad_id, ad_name, campaign_name, act_id, destination_type, dia, gasto_centavos, leads")
-    .gte("dia", desde(dias))
-    .limit(50000);
+  const corte = desde(dias);
 
-  if (error) {
-    throw new Error(`Falha ao ler desempenho_por_anuncio: ${error.message}`);
-  }
-  return data ?? [];
+  return lerTudo<LinhaView>("desempenho_por_anuncio", (de, ate) =>
+    db
+      .from("desempenho_por_anuncio")
+      .select(
+        "ad_id, ad_name, campaign_name, destination_type, dia, gasto_centavos, leads",
+        { count: "exact" },
+      )
+      .gte("dia", corte)
+      .order("dia", { ascending: true })
+      .order("ad_id", { ascending: true })
+      .range(de, ate),
+  );
+});
+
+/** De qual conta cada anúncio veio. Vem de `ad_metadata_cache`. */
+const contaPorAnuncio = cache(async function (): Promise<Map<string, string>> {
+  const db = servidor();
+  const linhas = await lerTudo<{ ad_id: string; act_id: string | null }>(
+    "ad_metadata_cache",
+    (de, ate) =>
+      db
+        .from("ad_metadata_cache")
+        .select("ad_id, act_id", { count: "exact" })
+        .order("ad_id", { ascending: true })
+        .range(de, ate),
+  );
+
+  const mapa = new Map<string, string>();
+  for (const l of linhas) if (l.act_id) mapa.set(l.ad_id, l.act_id);
+  return mapa;
 });
 
 export async function resumo(dias: number): Promise<Resumo> {
@@ -820,7 +936,10 @@ export async function gastoPorDia(dias: number): Promise<PontoDia[]> {
 }
 
 export async function anuncios(dias: number): Promise<LinhaAnuncio[]> {
-  const linhas = await linhasDoPeriodo(dias);
+  const [linhas, contas] = await Promise.all([
+    linhasDoPeriodo(dias),
+    contaPorAnuncio(),
+  ]);
 
   const porAd = new Map<string, LinhaAnuncio>();
   for (const l of linhas) {
@@ -828,7 +947,7 @@ export async function anuncios(dias: number): Promise<LinhaAnuncio[]> {
       adId: l.ad_id,
       nome: l.ad_name,
       campanha: l.campaign_name,
-      conta: l.act_id,
+      conta: contas.get(l.ad_id) ?? null,
       destino: l.destination_type,
       gasto: 0,
       leads: 0,
@@ -840,7 +959,7 @@ export async function anuncios(dias: number): Promise<LinhaAnuncio[]> {
     // mesmo anúncio; a primeira que tiver vale.
     atual.nome ??= l.ad_name;
     atual.campanha ??= l.campaign_name;
-    atual.conta ??= l.act_id;
+    atual.conta ??= contas.get(l.ad_id) ?? null;
     porAd.set(l.ad_id, atual);
   }
 
