@@ -317,6 +317,18 @@ automatica aqui; o resto seria disciplina."
 cd painel && npm install -D vitest
 ```
 
+> **O `install` falha com `ERESOLVE`** se `@types/node` estiver em `^20`:
+> o Vitest 5 exige `>=24`, e o scaffold fixa `^20` mesmo numa máquina
+> rodando Node 24. Suba os tipos para casar com o runtime — é o certo de
+> qualquer jeito:
+>
+> ```bash
+> npm install -D @types/node@^24
+> ```
+>
+> Não use `--legacy-peer-deps`: isso esconderia a divergência entre os
+> tipos e o Node que de fato executa o código.
+
 Criar `painel/vitest.config.ts`:
 
 ```typescript
@@ -381,11 +393,52 @@ describe("numero", () => {
 
 describe("diaCurto", () => {
   it("formata a data sem deslocar pelo fuso", () => {
-    // `dia` e uma coluna date, sem hora. `new Date("2026-09-18")` em
-    // ambiente a oeste de Greenwich vira 17/09 as 21h — e a tela mostraria
-    // o dia errado, exatamente o erro que a view existe para evitar.
     expect(diaCurto("2026-09-18")).toBe("18/09");
     expect(diaCurto("2026-01-01")).toBe("01/01");
+  });
+
+  // ATENÇÃO: os dois casos acima, sozinhos, passam por acidente.
+  //
+  // `new Date("2026-09-18")` é meia-noite UTC. A implementação ingênua
+  // (passar pelo Date) só devolve o dia errado em fuso NEGATIVO — então
+  // numa máquina a oeste de Greenwich o teste reprova, e num CI rodando
+  // UTC ele fica verde para sempre sem ter exercido nada.
+  //
+  // Medido: com TZ=UTC a implementação ingênua devolve "18/09" e passa;
+  // com TZ=America/Santarem devolve "17/09" e reprova.
+  //
+  // Por isso os casos abaixo varrem fusos dos DOIS lados de Greenwich —
+  // dois fusos com o mesmo deslocamento provariam menos do que parecem.
+  const FUSOS = ["Etc/GMT+12", "America/Santarem", "UTC", "Asia/Tokyo",
+                 "Pacific/Kiritimati"];
+
+  for (const tz of FUSOS) {
+    it(`nao desloca a data em ${tz}`, () => {
+      const antes = process.env.TZ;
+      process.env.TZ = tz;
+      try {
+        expect(diaCurto("2026-09-18")).toBe("18/09");
+        expect(diaCurto("2026-01-01")).toBe("01/01");
+        expect(diaCurto("2026-12-31")).toBe("31/12");
+      } finally {
+        process.env.TZ = antes;
+      }
+    });
+  }
+
+  it("controle: trocar TZ realmente muda o que o Date enxerga", () => {
+    // Sem este controle, a suite de fusos acima poderia estar verde por
+    // nao estar trocando fuso nenhum — e provaria exatamente nada.
+    const antes = process.env.TZ;
+    try {
+      process.env.TZ = "Pacific/Kiritimati";
+      const leste = new Date("2026-09-18").getDate();
+      process.env.TZ = "Etc/GMT+12";
+      const oeste = new Date("2026-09-18").getDate();
+      expect(leste).not.toBe(oeste);
+    } finally {
+      process.env.TZ = antes;
+    }
   });
 });
 
@@ -437,7 +490,14 @@ export function reais(centavos: number | string | null): string {
   if (centavos === null || centavos === undefined) return "—";
   const n = Number(centavos);
   if (!Number.isFinite(n)) return "—";
-  return MOEDA.format(n / 100);
+  // O Intl separa "R$" do número com espaço INQUEBRÁVEL (U+00A0), não com
+  // espaço comum. Na tela os dois são idênticos — e é por isso que o erro
+  // que ele causa é o pior possível:
+  //     expected 'R$ 18,64' to be 'R$ 18,64'
+  // Duas strings visualmente iguais, e quem lê fica caçando o que não vê.
+  // Normalizar num lugar só evita que todo `toBe("R$ ...")` futuro caia
+  // na mesma armadilha invisível.
+  return MOEDA.format(n / 100).replace(/[\u00A0\u202F]/g, " ");
 }
 
 export function numero(v: number | string | null): string {
@@ -475,7 +535,7 @@ export function horaCurta(iso: string | null): string {
 cd painel && npm test
 ```
 
-Esperado: 10 testes passando.
+Esperado: 15 testes passando.
 
 - [ ] **Passo 6: Commit**
 
@@ -815,7 +875,7 @@ export async function ultimaAtualizacao(): Promise<string | null> {
 cd painel && npm test
 ```
 
-Esperado: 19 testes passando (10 de formato + 9 de consultas).
+Esperado: 24 testes passando (15 de formato + 9 de consultas).
 
 - [ ] **Passo 6: Conferir contra o SQL direto**
 
@@ -1764,9 +1824,21 @@ Tarefa 7  período e atualizar     ← depende de todas
 `painel/` com `package.json` — sem ele não há onde instalar o Vitest nem
 onde colocar `src/lib/`.
 
-Depois dela, **as Tarefas 2 e 3 são independentes entre si** e podem rodar
-em paralelo: a 2 é módulo puro, a 3 fala com o banco, e não compartilham
-arquivo.
+Depois dela, **as Tarefas 2 e 3 podem rodar em paralelo** — a 2 é módulo
+puro, a 3 fala com o banco.
+
+> **Mas elas não são inteiramente independentes**, e isso custou confusão
+> na primeira execução: as duas mexem em `package.json`,
+> `package-lock.json` e `vitest.config.ts`. Quem commitar primeiro leva
+> junto o que a outra já tiver instalado.
+>
+> Pior: o `vitest.config.ts` da Tarefa 2 referencia `./tests/setup.ts`, que
+> só chega no commit da Tarefa 3. **Entre os dois commits, um checkout
+> limpo não roda os testes.** Não quebra nada em sequência, mas quem
+> bisecar o histórico ali vai encontrar um estado que não funciona.
+>
+> Rodar as duas em sequência evita isso inteiro. Em paralelo, ganha-se
+> tempo e paga-se com um commit intermediário quebrado.
 
 As Tarefas 5 e 6 também podem, com uma ressalva: **as duas modificam
 `page.tsx`**. Quem chegar em segundo precisa reler o arquivo antes de
