@@ -508,7 +508,7 @@ o erro que a view de desempenho existe para evitar."
 - Produz:
   `type Resumo = { gasto: number; leads: number; anuncios: number; cplMedio: number | null }`,
   `type PontoDia = { dia: string; gasto: number }`,
-  `type LinhaAnuncio = { adId: string; nome: string | null; campanha: string | null; destino: string | null; gasto: number; leads: number; cpl: number | null }`,
+  `type LinhaAnuncio = { adId: string; nome: string | null; campanha: string | null; conta: string | null; destino: string | null; gasto: number; leads: number; cpl: number | null }`,
   `resumo(dias: number): Promise<Resumo>`,
   `gastoPorDia(dias: number): Promise<PontoDia[]>`,
   `anuncios(dias: number): Promise<LinhaAnuncio[]>`,
@@ -586,6 +586,31 @@ describe("anuncios", () => {
     }
   });
 
+  it("anuncios de contas diferentes com o mesmo nome sao linhas separadas", async () => {
+    // O tenant real tem duas contas, e ha anuncios homonimos em cada uma:
+    // dois "ad01" na campanha VAGA. Se a agregacao juntasse por nome em
+    // vez de por ad_id, o gasto dos dois viraria um so — e o CPL sairia
+    // errado sem nada indicar.
+    const linhas = await anuncios(90);
+    const porNome = new Map<string, number>();
+    for (const l of linhas) {
+      if (l.nome) porNome.set(l.nome, (porNome.get(l.nome) ?? 0) + 1);
+    }
+    const homonimos = [...porNome.values()].filter((n) => n > 1);
+    if (homonimos.length > 0) {
+      // Havendo homonimos, cada um precisa dizer de qual conta veio.
+      const comNomeRepetido = linhas.filter(
+        (l) => l.nome && porNome.get(l.nome)! > 1,
+      );
+      for (const l of comNomeRepetido) {
+        expect(l.conta).not.toBeNull();
+      }
+    }
+    // E os ad_id continuam unicos, aconteca o que acontecer com os nomes.
+    const ids = linhas.map((l) => l.adId);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("a soma dos anuncios bate com o gasto do resumo", async () => {
     const [linhas, r] = await Promise.all([anuncios(90), resumo(90)]);
     const soma = linhas.reduce((s, l) => s + l.gasto, 0);
@@ -646,6 +671,15 @@ export type LinhaAnuncio = {
   adId: string;
   nome: string | null;
   campanha: string | null;
+  /**
+   * De qual conta de anúncio o anúncio veio.
+   *
+   * Não é decoração: o tenant real tem duas contas, e existem anúncios com
+   * o MESMO nome em cada uma — dois `ad01`, em contas diferentes, ambos na
+   * campanha `VAGA`. Sem mostrar a conta, a tabela exibe duas linhas
+   * idênticas no rótulo e o operador conclui que o painel duplicou.
+   */
+  conta: string | null;
   destino: string | null;
   gasto: number;
   leads: number;
@@ -682,7 +716,7 @@ const linhasDoPeriodo = cache(async function (dias: number) {
   const db = servidor();
   const { data, error } = await db
     .from("desempenho_por_anuncio")
-    .select("ad_id, ad_name, campaign_name, destination_type, dia, gasto_centavos, leads")
+    .select("ad_id, ad_name, campaign_name, act_id, destination_type, dia, gasto_centavos, leads")
     .gte("dia", desde(dias))
     .limit(50000);
 
@@ -734,6 +768,7 @@ export async function anuncios(dias: number): Promise<LinhaAnuncio[]> {
       adId: l.ad_id,
       nome: l.ad_name,
       campanha: l.campaign_name,
+      conta: l.act_id,
       destino: l.destination_type,
       gasto: 0,
       leads: 0,
@@ -745,6 +780,7 @@ export async function anuncios(dias: number): Promise<LinhaAnuncio[]> {
     // mesmo anúncio; a primeira que tiver vale.
     atual.nome ??= l.ad_name;
     atual.campanha ??= l.campaign_name;
+    atual.conta ??= l.act_id;
     porAd.set(l.ad_id, atual);
   }
 
@@ -779,7 +815,7 @@ export async function ultimaAtualizacao(): Promise<string | null> {
 cd painel && npm test
 ```
 
-Esperado: 18 testes passando (10 de formato + 8 de consultas).
+Esperado: 19 testes passando (10 de formato + 9 de consultas).
 
 - [ ] **Passo 6: Conferir contra o SQL direto**
 
@@ -1307,6 +1343,7 @@ export function TabelaAnuncios({ linhas }: { linhas: LinhaAnuncio[] }) {
             <tr>
               <th style={th}>Anúncio</th>
               <th style={th}>Campanha</th>
+              <th style={th}>Conta</th>
               <th style={{ ...th, textAlign: "right" }}>Gasto</th>
               <th style={{ ...th, textAlign: "right" }}>Leads</th>
               <th style={{ ...th, textAlign: "right" }}>CPL</th>
@@ -1324,6 +1361,13 @@ export function TabelaAnuncios({ linhas }: { linhas: LinhaAnuncio[] }) {
                 </td>
                 <td style={{ ...td, color: "var(--texto-secundario)" }}>
                   {l.campanha ?? "—"}
+                </td>
+                {/* Sem esta coluna, dois anuncios homonimos em contas
+                    diferentes viram duas linhas identicas no rotulo — e o
+                    operador conclui que o painel duplicou. Acontece de
+                    verdade: ha dois "ad01" na campanha VAGA. */}
+                <td style={{ ...td, color: "var(--texto-fraco)", fontSize: 11 }}>
+                  {l.conta?.replace(/^act_/, "") ?? "—"}
                 </td>
                 <td className="numero" style={{ ...td, textAlign: "right" }}>
                   {reais(l.gasto)}
@@ -1383,6 +1427,9 @@ Três coisas:
    traço — traço significaria "não se aplica"
 3. Campanha de visita ao perfil mostra traço nas duas colunas, porque lead
    não se aplica a ela
+4. **Os dois `ad01` aparecem como linhas distintas, com contas diferentes.**
+   São anúncios diferentes com o mesmo nome, um em cada conta — sem a
+   coluna de conta pareceriam duplicação
 
 - [ ] **Passo 4: Commit**
 
