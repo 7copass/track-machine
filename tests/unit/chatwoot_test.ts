@@ -246,3 +246,154 @@ Deno.test("valor malformado nao derruba o webhook", () => {
     assertEquals(Number.isNaN(Date.parse(normalizarCriadaEm(lixo))), false);
   }
 });
+
+// ─── As duas grafias do nono digito, e a conferencia do telefone ────
+//
+// Medido em producao contra a API real do Chatwoot, com os 35 telefones
+// capturados: 35 de 35 existem la como contato, e so 5 tinham sido
+// encontrados — exatamente os 5 em que o Chatwoot por acaso guarda a
+// mesma grafia de 12 digitos que a Evolution nos deu. Nos outros, o
+// Chatwoot guarda a grafia de 13: o nosso +559391597627 esta la como
+// +5593991597627. A busca so acertava por coincidencia.
+//
+// A segunda metade do problema e que /contacts/search e DIFUSA: casa com
+// nome, e-mail e telefone parcial. Pegar o primeiro resultado as cegas
+// ligaria o lead a outra pessoa, e o painel mostraria uma atribuicao
+// confiante e errada — pior que nenhuma.
+
+/** Uma resposta por chamada, na ordem. */
+function mockFetchSequencia(respostas: { corpo: unknown; status?: number }[]) {
+  const original = globalThis.fetch;
+  const chamadas: { url: string; init?: RequestInit }[] = [];
+  globalThis.fetch = ((url: string | URL | Request, init?: RequestInit) => {
+    const i = chamadas.length;
+    chamadas.push({ url: String(url), init });
+    const r = respostas[i] ?? { corpo: { payload: [] } };
+    return Promise.resolve(
+      new Response(JSON.stringify(r.corpo), {
+        status: r.status ?? 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+  }) as typeof fetch;
+  return { chamadas, restaurar: () => { globalThis.fetch = original; } };
+}
+
+Deno.test("acha o contato na grafia de 13 digitos que o Chatwoot guarda", async () => {
+  const m = mockFetchSequencia([
+    { corpo: { payload: [] } },
+    { corpo: { payload: [{ id: 42, phone_number: "+5593991597627" }] } },
+  ]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+559391597627"), 42);
+    assertEquals(m.chamadas.length, 2);
+    assertStringIncludes(m.chamadas[0].url, "q=%2B559391597627");
+    assertStringIncludes(m.chamadas[1].url, "q=%2B5593991597627");
+  } finally { m.restaurar(); }
+});
+
+Deno.test("para na primeira grafia quando ela ja acha", async () => {
+  // Cada grafia e uma requisicao a mais no rate limit do Chatwoot, em
+  // cima de um webhook que roda a cada lead.
+  const m = mockFetchSequencia([
+    { corpo: { payload: [{ id: 7, phone_number: "+559391648044" }] } },
+  ]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+559391648044"), 7);
+    assertEquals(m.chamadas.length, 1);
+  } finally { m.restaurar(); }
+});
+
+Deno.test("recusa contato que a busca difusa trouxe com outro telefone", async () => {
+  // /contacts/search casa nome e e-mail tambem. Aceitar o primeiro
+  // resultado as cegas gravaria a origem do anuncio no contato errado.
+  const m = mockFetchSequencia([
+    { corpo: { payload: [{ id: 999, phone_number: "+5511999999999" }] } },
+    { corpo: { payload: [{ id: 999, phone_number: "+5511999999999" }] } },
+  ]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+559391597627"), null);
+  } finally { m.restaurar(); }
+});
+
+Deno.test("contato recusado por telefone divergente nao e falha", async () => {
+  // Mesma razao de a lista vazia nao ser falha: o Chatwoot respondeu. Se
+  // isso contasse como falha, o alerta dispararia no caminho normal.
+  const m = mockFetchSequencia([
+    { corpo: { payload: [{ id: 999, phone_number: "+5511999999999" }] } },
+  ]);
+  try {
+    await buscarContatoPorTelefone(cfg, "+559391597627");
+    assertEquals(ultimaFalha, null);
+  } finally { m.restaurar(); }
+});
+
+Deno.test("aceita contato cujo telefone difere so pelo nono digito", async () => {
+  // A conferencia e pela chave normalizada, nao por igualdade de string:
+  // senao ela rejeitaria justamente o contato que a segunda grafia achou.
+  const m = mockFetchSequencia([
+    { corpo: { payload: [{ id: 42, phone_number: "+5593991597627" }] } },
+  ]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+559391597627"), 42);
+  } finally { m.restaurar(); }
+});
+
+Deno.test("escolhe o contato certo quando a busca difusa mistura resultados", async () => {
+  // O homonimo vem primeiro na resposta do Chatwoot; o dono do telefone
+  // vem depois. Ler so o primeiro perderia o certo E pegaria o errado.
+  const m = mockFetchSequencia([
+    {
+      corpo: {
+        payload: [
+          { id: 900, phone_number: "+5511988887777" },
+          { id: 42, phone_number: "+5593991597627" },
+        ],
+      },
+    },
+  ]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+559391597627"), 42);
+  } finally { m.restaurar(); }
+});
+
+Deno.test("recusa contato sem telefone nenhum", async () => {
+  // Contato so com e-mail casa com a busca difusa e nao da para conferir.
+  const m = mockFetchSequencia([
+    { corpo: { payload: [{ id: 55 }, { id: 56, phone_number: null }] } },
+  ]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+559391597627"), null);
+  } finally { m.restaurar(); }
+});
+
+Deno.test("nao tenta a segunda grafia quando o numero e estrangeiro", async () => {
+  const m = mockFetchSequencia([{ corpo: { payload: [] } }]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+351912345678"), null);
+    assertEquals(m.chamadas.length, 1);
+  } finally { m.restaurar(); }
+});
+
+Deno.test("nao tenta a segunda grafia quando o numero e fixo brasileiro", async () => {
+  // Acrescentar o nono digito a um fixo produz numero que nao existe.
+  const m = mockFetchSequencia([{ corpo: { payload: [] } }]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+551133334444"), null);
+    assertEquals(m.chamadas.length, 1);
+  } finally { m.restaurar(); }
+});
+
+Deno.test("credencial recusada interrompe as demais grafias", async () => {
+  // Token revogado nao vira melhor na segunda tentativa, e insistir so
+  // multiplicaria requisicao recusada.
+  const m = mockFetchSequencia([
+    { corpo: { erro: "nao autorizado" }, status: 401 },
+    { corpo: { payload: [{ id: 42, phone_number: "+5593991597627" }] } },
+  ]);
+  try {
+    assertEquals(await buscarContatoPorTelefone(cfg, "+559391597627"), null);
+    assertEquals(m.chamadas.length, 1);
+    assertEquals(ultimaFalha, "auth");
+  } finally { m.restaurar(); }
+});

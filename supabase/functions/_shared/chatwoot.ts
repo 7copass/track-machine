@@ -10,6 +10,8 @@
  * permissão e sem credencial nenhuma.
  */
 
+import { grafiasPlausiveis, toMatchKey } from "./phone.ts";
+
 export type ChatwootConfig = {
   baseUrl: string;
   accountId: number;
@@ -68,30 +70,79 @@ function anotarFalhaDeRede(contexto: string): void {
   console.warn(`Chatwoot inalcancavel em ${contexto}`);
 }
 
+/**
+ * Acha na resposta o contato que é mesmo o telefone procurado.
+ *
+ * `/contacts/search?q=` é busca DIFUSA: casa com nome, e-mail e telefone
+ * parcial. Pegar o primeiro resultado às cegas ligaria o lead a outra
+ * pessoa, e o erro seria silencioso — o painel mostraria uma atribuição
+ * confiante e errada, que é pior que nenhuma, porque ninguém vai conferir
+ * o que parece certo.
+ *
+ * A conferência é pela chave normalizada, não por igualdade de string: o
+ * contato encontrado na segunda grafia tem, por construção, telefone
+ * diferente do que se procurou, e comparar texto cru rejeitaria justamente
+ * quem se foi buscar. Contato sem telefone é recusado — casou com a busca
+ * por nome ou e-mail e não há como confirmar que é a mesma pessoa.
+ */
+function acharContatoDoTelefone(payload: unknown, procurado: string): number | null {
+  if (!Array.isArray(payload)) return null;
+  for (const c of payload) {
+    const id = (c as { id?: unknown })?.id;
+    const tel = (c as { phone_number?: unknown })?.phone_number;
+    if (
+      typeof id === "number" && typeof tel === "string" &&
+      toMatchKey(tel) === procurado
+    ) {
+      return id;
+    }
+  }
+  return null;
+}
+
+/**
+ * Busca o contato tentando as grafias plausíveis do telefone, em ordem.
+ *
+ * Mandar só a grafia que veio da Evolution acertava por coincidência:
+ * medido em produção contra a API real, dos 35 telefones capturados os 35
+ * existiam como contato no Chatwoot e só 5 eram encontrados — os 5 em que
+ * as duas grafias por acaso coincidem. Ver `grafiasPlausiveis`.
+ *
+ * Para na primeira grafia que achar: cada tentativa é uma requisição a
+ * mais no rate limit do Chatwoot, em cima de um webhook que roda a cada
+ * lead. Falha de HTTP ou de rede também interrompe — token revogado não
+ * fica melhor na segunda tentativa.
+ */
 export async function buscarContatoPorTelefone(
   cfg: ChatwootConfig,
   telefone: string,
 ): Promise<number | null> {
   ultimaFalha = null;
-  // encodeURIComponent e obrigatorio: "+" cru em query string e lido como
-  // espaco do outro lado, e a busca voltaria vazia para todo mundo.
-  const url = `${cfg.baseUrl}/api/v1/accounts/${cfg.accountId}` +
-    `/contacts/search?q=${encodeURIComponent(telefone)}`;
-  try {
-    const r = await fetch(url, { headers: headers(cfg) });
-    if (!r.ok) {
-      anotarFalhaHttp(r.status, "busca de contato");
+  const procurado = toMatchKey(telefone);
+
+  for (const grafia of grafiasPlausiveis(telefone)) {
+    // encodeURIComponent e obrigatorio: "+" cru em query string e lido como
+    // espaco do outro lado, e a busca voltaria vazia para todo mundo.
+    const url = `${cfg.baseUrl}/api/v1/accounts/${cfg.accountId}` +
+      `/contacts/search?q=${encodeURIComponent(grafia)}`;
+    try {
+      const r = await fetch(url, { headers: headers(cfg) });
+      if (!r.ok) {
+        anotarFalhaHttp(r.status, "busca de contato");
+        return null;
+      }
+      const j = await r.json();
+      const id = acharContatoDoTelefone(j?.payload, procurado);
+      if (id !== null) return id;
+    } catch {
+      anotarFalhaDeRede("busca de contato");
       return null;
     }
-    const j = await r.json();
-    const primeiro = j?.payload?.[0];
-    // Lista vazia não é falha: o Chatwoot respondeu, o contato é que ainda
-    // não existe. A Tarefa 7 reconcilia.
-    return typeof primeiro?.id === "number" ? primeiro.id : null;
-  } catch {
-    anotarFalhaDeRede("busca de contato");
-    return null;
   }
+
+  // Nenhuma grafia achou. Isso não é falha: o Chatwoot respondeu, o
+  // contato é que ainda não existe. A Tarefa 7 reconcilia.
+  return null;
 }
 
 export async function gravarAtributosDeOrigem(

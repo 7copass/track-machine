@@ -62,3 +62,56 @@ export function toMatchKey(e164: string): string {
   }
   return digitos;
 }
+
+/**
+ * Primeiro dígito do número local que caracteriza celular na grafia de 8.
+ *
+ * Fixo brasileiro começa com 2, 3, 4 ou 5. A distinção importa porque
+ * acrescentar o nono dígito a um fixo produz um número que não existe.
+ */
+const INICIOS_DE_CELULAR = new Set(["6", "7", "8", "9"]);
+
+/**
+ * Todas as grafias sob as quais o mesmo celular pode estar gravado.
+ *
+ * `toMatchKey` resolve o join no SQL, onde os dois lados já estão na
+ * tabela. Buscar na API do Chatwoot é o problema inverso: manda-se uma
+ * string e recebe-se o que casar com *ela*, então a grafia precisa ser a
+ * do outro lado, que não se conhece de antemão. Medido em produção contra
+ * a API real, com os 35 telefones capturados: 35 existem lá como contato e
+ * só 5 eram encontrados — exatamente os 5 em que o Chatwoot por acaso
+ * guarda a mesma grafia de 12 dígitos que a Evolution nos deu. Nos outros,
+ * ele guarda a de 13: o nosso `+559391597627` está lá como
+ * `+5593991597627`.
+ *
+ * A original vem sempre primeiro, para quem chama poder parar na primeira
+ * que achar e não gastar rate limit à toa.
+ *
+ * Móvel brasileiro é 55 + DDD + local; com 9 dígitos locais o primeiro é o
+ * nono dígito, com 8 é a grafia legada. Só se acrescenta o nono dígito
+ * quando o local de 8 começa com 6, 7, 8 ou 9 — a partir de um fixo, ele
+ * cunharia um número inexistente e a requisição extra nunca acharia nada.
+ * Número estrangeiro sai intacto: o nono dígito é regra brasileira, e
+ * mexer nele inventaria gente que não existe.
+ */
+export function grafiasPlausiveis(e164: string): string[] {
+  const digitos = e164.replace(/\D/g, "");
+  const grafias = ["+" + digitos];
+
+  if (!digitos.startsWith("55")) return grafias;
+
+  const ddd = digitos.slice(0, 4);
+  const local = digitos.slice(4);
+
+  // Já tem o nono dígito: a outra grafia é ele sem o 9.
+  if (digitos.length === 13 && local[0] === "9") {
+    grafias.push("+" + ddd + local.slice(1));
+  }
+
+  // Grafia legada de celular: a outra é ela com o 9 na frente.
+  if (digitos.length === 12 && INICIOS_DE_CELULAR.has(local[0])) {
+    grafias.push("+" + ddd + "9" + local);
+  }
+
+  return grafias;
+}
