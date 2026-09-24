@@ -26,7 +26,9 @@ export default async function Pagina() {
           que sempre veio do dado. `null` enquanto não houver lead nenhum:
           sem data não há o que avisar, e um aviso sem data não explica nada.
         */}
-        <AvisoCaptura desde="2026-09-18" />
+        {r.inicioCaptura === null ? null : (
+          <AvisoCaptura desde={r.inicioCaptura} />
+        )}
         <Cards resumo={r} />
         <GraficoGasto pontos={pontos} />
       </div>
