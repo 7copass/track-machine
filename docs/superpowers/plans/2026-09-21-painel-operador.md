@@ -1274,7 +1274,7 @@ atualizacao."
 - **`#3B82F6` foi validado** contra a superfície escura — passa na faixa de
   luminosidade, no piso de croma e no contraste. Trocar exige revalidar.
 
-- [ ] **Passo 1: Escrever o componente**
+- [x] **Passo 1: Escrever o componente**
 
 Criar `painel/src/componentes/GraficoGasto.tsx`:
 
@@ -1395,7 +1395,20 @@ export function GraficoGasto({ pontos }: { pontos: PontoDia[] }) {
 }
 ```
 
-- [ ] **Passo 2: Montar na página**
+> **O que foi implementado diverge do bloco acima, e o commit explica cada
+> ponto.** Em resumo: a geometria saiu para `painel/src/lib/grafico.ts`,
+> função pura sob teste (`painel/tests/grafico.test.ts`), porque coordenada
+> errada é número errado em silêncio e aqui sai barato pegar. O eixo x passou
+> a ser proporcional à data, não ao índice — a view não tem uma linha por dia
+> de calendário (medido: 87 dias presentes em 90, e os três ausentes são
+> domingos). A altura fixa do `<svg>` virou `height: auto`, senão o
+> `preserveAspectRatio` padrão centraliza o desenho com folga lateral em
+> cartão mais largo que 1000px e o crosshair descola do mouse (medido em
+> viewport de 1440: 3,8 dias de erro na borda direita). E o cabeçalho passou
+> a dizer quanto vale o topo da escala, que sem isso só se descobre passando
+> o mouse.
+
+- [x] **Passo 2: Montar na página**
 
 Em `painel/src/app/page.tsx`, acrescentar o import e o componente:
 
@@ -1415,7 +1428,7 @@ E dentro do `Pagina`, buscar os dois em paralelo e renderizar:
         <GraficoGasto pontos={pontos} />
 ```
 
-- [ ] **Passo 3: Olhar e conferir**
+- [x] **Passo 3: Olhar e conferir**
 
 ```bash
 cd painel && npm run dev
@@ -1427,7 +1440,7 @@ Confira três coisas na tela:
 2. Passar o mouse mostra valor e dia, e o gráfico **não pula** de altura
 3. A linha tem 2px e a grade é mais fraca que ela
 
-- [ ] **Passo 4: Commit**
+- [x] **Passo 4: Commit**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
