@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
-import type { PontoDia, Resumo } from "@/lib/consultas";
+import type { LinhaAnuncio, PontoDia, Resumo } from "@/lib/consultas";
 
 // A página com o dado ditado, e não o do banco.
 //
@@ -14,18 +14,51 @@ import type { PontoDia, Resumo } from "@/lib/consultas";
 //
 // Aqui o `inicioCaptura` é ditado como um dia que a constante não tem. Sem
 // banco, sem rede, e sem depender de que dia o banco está.
-vi.mock("@/lib/consultas", () => ({
+// Só as três leituras do banco viram dublê. `criativos` fica a de verdade:
+// é função pura, e substituí-la por um `vi.fn()` faria a página desenhar o
+// que o dublê mandasse — inclusive uma tabela coerente com um agrupamento
+// que não existe.
+vi.mock("@/lib/consultas", async (original) => ({
+  ...(await original<typeof import("@/lib/consultas")>()),
   resumo: vi.fn(),
   gastoPorDia: vi.fn(),
+  anuncios: vi.fn(),
 }));
 
 const { default: Pagina } = await import("@/app/page");
-const { gastoPorDia, resumo } = await import("@/lib/consultas");
+const { anuncios, gastoPorDia, resumo } = await import("@/lib/consultas");
 
 const PONTOS: PontoDia[] = [
   { dia: "2026-07-02", gasto: 12345 },
   { dia: "2026-07-03", gasto: 6789 },
 ];
+
+// Dois anúncios com o mesmo nome e um terceiro sozinho: é o formato em que
+// a base real chega (836 anúncios, 249 nomes), no menor tamanho que ainda
+// mostra o agrupamento acontecendo.
+const ADS: LinhaAnuncio[] = [
+  {
+    adId: "1", nome: "AD01", campanha: "VAGA", conta: "act_1",
+    destino: "WHATSAPP", gasto: 10000, leads: 3, cpl: 3333,
+  },
+  {
+    adId: "2", nome: "AD01", campanha: "OUTRA", conta: "act_2",
+    destino: "WHATSAPP", gasto: 20000, leads: 0, cpl: null,
+  },
+  {
+    adId: "3", nome: "AD02", campanha: "VAGA", conta: "act_1",
+    destino: "INSTAGRAM_PROFILE", gasto: 5000, leads: 0, cpl: null,
+  },
+];
+
+/** Cada `<tr>` do markup como a lista das suas células, em ordem. */
+function linhasDaTabela(markup: string): string[][] {
+  return [...markup.matchAll(/<tr>(.*?)<\/tr>/g)].map((linha) =>
+    [...linha[1].matchAll(/<t[dh][^>]*>(.*?)<\/t[dh]>/g)].map((celula) =>
+      celula[1].replace(/<[^>]*>/g, ""),
+    ),
+  );
+}
 
 function comInicio(inicioCaptura: string | null): Resumo {
   return {
@@ -41,6 +74,7 @@ function comInicio(inicioCaptura: string | null): Resumo {
 async function tela(inicioCaptura: string | null): Promise<string> {
   vi.mocked(resumo).mockResolvedValue(comInicio(inicioCaptura));
   vi.mocked(gastoPorDia).mockResolvedValue(PONTOS);
+  vi.mocked(anuncios).mockResolvedValue(ADS);
   return renderToStaticMarkup(await Pagina());
 }
 
@@ -61,5 +95,20 @@ describe("a pagina, com o dado ditado", () => {
     expect(markup).not.toContain("Captura de leads ativa desde");
     // E o resto da tela continua de pé.
     expect(markup).toContain("R$ 191,34");
+  });
+
+  it("agrupa os anúncios antes de desenhar a tabela", async () => {
+    // A tabela é o único lugar da tela que mostra os anúncios um a um, e é
+    // aqui que se prova que a página não os mostra um a um: os dois `AD01`
+    // saem numa linha só, com `2` em Vezes. Sem este caso, tirar o
+    // `criativos(...)` do `page.tsx` não teria teste vermelho nenhum — os
+    // de `criativos.test.ts` chamam a função direto.
+    const markup = await tela("2026-07-02");
+
+    expect(linhasDaTabela(markup)).toEqual([
+      ["Criativo", "Onde rodou", "Vezes", "Gasto", "Leads", "CPL"],
+      ["AD01", "2 campanhas · 2 contas", "2", "R$ 300,00", "3", "R$ 100,00"],
+      ["AD02", "VAGA", "—", "R$ 50,00", "—", "—"],
+    ]);
   });
 });

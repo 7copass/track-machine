@@ -1,16 +1,22 @@
 import { Cards } from "@/componentes/Cards";
 import { AvisoCaptura } from "@/componentes/AvisoCaptura";
 import { GraficoGasto } from "@/componentes/GraficoGasto";
-import { gastoPorDia, resumo } from "@/lib/consultas";
+import { TabelaCriativos } from "@/componentes/TabelaCriativos";
+import { anuncios, criativos, gastoPorDia, resumo } from "@/lib/consultas";
 
 export const dynamic = "force-dynamic";
 
 export default async function Pagina() {
-  // As duas leituras caem na mesma leitura da view: `linhasDoPeriodo` é
-  // `cache()`, e a primeira a chamar registra a promessa que a segunda
-  // recebe. Em paralelo pelo mesmo motivo — não há uma segunda ida à rede
-  // para esperar em fila.
-  const [r, pontos] = await Promise.all([resumo(90), gastoPorDia(90)]);
+  // As três leituras caem na mesma leitura da view: `linhasDoPeriodo` é
+  // `cache()`, e a primeira a chamar registra a promessa que as outras
+  // recebem. Em paralelo pelo mesmo motivo — não há uma segunda ida à rede
+  // para esperar em fila. (`anuncios` faz uma segunda consulta, a das
+  // contas, e é justamente por estar em paralelo que ela não empilha.)
+  const [r, pontos, linhas] = await Promise.all([
+    resumo(90),
+    gastoPorDia(90),
+    anuncios(90),
+  ]);
 
   return (
     <main style={{ maxWidth: 1200, margin: "0 auto", padding: 32 }}>
@@ -31,6 +37,7 @@ export default async function Pagina() {
         )}
         <Cards resumo={r} />
         <GraficoGasto pontos={pontos} />
+        <TabelaCriativos linhas={criativos(linhas)} />
       </div>
     </main>
   );

@@ -366,3 +366,83 @@ export async function ultimaAtualizacao(): Promise<string | null> {
 
   return data?.iniciado_em ?? null;
 }
+
+export type LinhaCriativo = {
+  nome: string | null;
+  /** Quantos objetos de anúncio entraram nesta linha. */
+  vezes: number;
+  /** A campanha, quando é uma só; `null` quando o criativo rodou em várias. */
+  campanha: string | null;
+  campanhas: number;
+  contas: number;
+  /**
+   * Se faz sentido cobrar lead deste criativo.
+   *
+   * Decidido no agrupamento e não na tela, porque o grupo pode misturar
+   * destinos: o mesmo criativo pode ter rodado numa campanha de mensagem
+   * e numa de visita ao perfil.
+   */
+  geraLead: boolean;
+  gasto: number;
+  leads: number;
+  cpl: number | null;
+};
+
+const DESTINOS_COM_LEAD = new Set([
+  "WHATSAPP",
+  "MESSAGING_INSTAGRAM_DIRECT_WHATSAPP",
+]);
+
+/**
+ * Uma linha por criativo, agrupando os anúncios pelo nome.
+ *
+ * **Por que nome e não `ad_id`.** Medido na base em 24/09/2026, com 836
+ * anúncios no período: por `ad_id` são 836 linhas, todas distintas e todas
+ * ilegíveis — o rótulo é um número de 17 dígitos. Por nome são 249 linhas,
+ * e nenhum nome se repete. Nenhuma combinação de rótulos legíveis separa
+ * os 836: por nome + conta ficam 742 ambíguos, e somando campanha e
+ * conjunto ainda ficam 291. `AD03 - IMG - INFOR` são 20 anúncios, em duas
+ * contas.
+ *
+ * Reusar o mesmo criativo em vários conjuntos é a prática normal na Meta, e
+ * a pergunta que o operador faz é "esse criativo funciona?", não "esse
+ * objeto de anúncio funciona?". O que impede o agrupamento de esconder
+ * informação é a coluna `vezes`.
+ */
+export function criativos(linhas: LinhaAnuncio[]): LinhaCriativo[] {
+  // Anúncio sem nome fica sozinho, na chave do próprio id: agrupar todos
+  // os nulos juntos somaria gastos de anúncios sem relação nenhuma.
+  const chave = (l: LinhaAnuncio) =>
+    l.nome === null ? `id:${l.adId}` : `nome:${l.nome}`;
+
+  const grupos = new Map<string, LinhaAnuncio[]>();
+  for (const l of linhas) {
+    const k = chave(l);
+    const g = grupos.get(k);
+    if (g) g.push(l);
+    else grupos.set(k, [l]);
+  }
+
+  return [...grupos.values()]
+    .map((g) => {
+      const gasto = g.reduce((s, l) => s + l.gasto, 0);
+      const leads = g.reduce((s, l) => s + l.leads, 0);
+      const camps = new Set(g.map((l) => l.campanha));
+      return {
+        nome: g[0].nome,
+        vezes: g.length,
+        campanha: camps.size === 1 ? g[0].campanha : null,
+        campanhas: camps.size,
+        contas: new Set(g.map((l) => l.conta)).size,
+        geraLead: g.some(
+          (l) => l.destino !== null && DESTINOS_COM_LEAD.has(l.destino),
+        ),
+        gasto,
+        leads,
+        // Sobre o total. A média dos CPLs de cada anúncio dá outro número,
+        // e o errado: pesa igual um anúncio de R$ 1 e um de R$ 900.
+        cpl: leads > 0 ? Math.floor(gasto / leads) : null,
+      };
+    })
+    .sort((a, b) => b.gasto - a.gasto);
+}

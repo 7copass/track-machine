@@ -1496,7 +1496,7 @@ O azul foi validado contra a superficie escura antes de entrar."
 > anuncio funciona?". A coluna `vezes` mantem visivel quantos objetos
 > entraram em cada linha.
 
-- [ ] **Passo 1: Escrever os testes primeiro** (devem falhar)
+- [x] **Passo 1: Escrever os testes primeiro** (devem falhar)
 
 Criar `painel/tests/criativos.test.ts`:
 
@@ -1595,7 +1595,7 @@ describe("criativos", () => {
 });
 ```
 
-- [ ] **Passo 2: Implementar `criativos` em `consultas.ts`**
+- [x] **Passo 2: Implementar `criativos` em `consultas.ts`**
 
 ```ts
 export type LinhaCriativo = {
@@ -1663,7 +1663,7 @@ export function criativos(linhas: LinhaAnuncio[]): LinhaCriativo[] {
 }
 ```
 
-- [ ] **Passo 3: Escrever o componente**
+- [x] **Passo 3: Escrever o componente**
 
 Criar `painel/src/componentes/TabelaCriativos.tsx`:
 
@@ -1770,7 +1770,7 @@ export function TabelaCriativos({ linhas }: { linhas: LinhaCriativo[] }) {
 }
 ```
 
-- [ ] **Passo 4: Montar na página**
+- [x] **Passo 4: Montar na página**
 
 Em `painel/src/app/page.tsx` — **reler o arquivo antes de editar**, a
 Tarefa 5 também mexe nele:
@@ -1790,18 +1790,30 @@ import { anuncios, criativos, gastoPorDia, resumo } from "@/lib/consultas";
         <TabelaCriativos linhas={criativos(linhas)} />
 ```
 
-- [ ] **Passo 5: Olhar e conferir na base real**
+- [x] **Passo 5: Olhar e conferir na base real**
 
-1. A tabela tem **249 linhas**, não 840
+A base é viva — os crons escrevem o tempo todo e a janela de 90 dias
+desliza —, então **confira cada item contra o SQL do mesmo instante**, não
+contra o número escrito aqui. Entre parênteses, o que a medição de
+24/09/2026 devolveu.
+
+1. A tabela tem **uma linha por nome**, não uma por `ad_id` (249 linhas
+   para 836 anúncios), e o cabeçalho diz esse número
 2. A primeira linha é a de maior gasto
-3. `AD01` aparece **uma vez**, com `13` na coluna Vezes — não treze vezes
-4. `ad01` da campanha `VAGA` mostra **29 leads** e CPL de R$ 8,44
+3. O nome que mais se repete aparece **uma vez só**, com a contagem na
+   coluna Vezes (`AD01`: uma linha, `13` em Vezes)
+4. A linha do único criativo com lead mostra o lead e o CPL acesos, e o
+   CPL é o do total da linha (`ad01` da campanha `VAGA`: 32 leads, gasto
+   de R$ 259,85, CPL de R$ 8,12 — e não a média dos CPLs dos dois
+   anúncios que ela agrupa)
 5. Criativo de campanha de mensagem sem lead mostra **`0`** em cinza, não
-   um traço
+   um traço (246 das 249 linhas)
 6. Criativo só de visita ao perfil mostra traço nas colunas de lead e CPL
-7. A soma da coluna Gasto bate com o card de gasto total
+   (`AD01 GABRIEL MASTER` e `AD02 MASTER`)
+7. A soma da coluna Gasto bate com o card de gasto total, e a soma da
+   coluna Vezes bate com o card de Anúncios (R$ 31.305,67 e 836)
 
-- [ ] **Passo 6: Commit**
+- [x] **Passo 6: Commit**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
