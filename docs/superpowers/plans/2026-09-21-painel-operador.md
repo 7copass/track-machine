@@ -1849,7 +1849,7 @@ um anuncio barato e um caro."
 - Produz: `<SeletorPeriodo atual={number} />`, `<BotaoAtualizar em={string | null} />`,
   rota `POST /atualizar`.
 
-- [ ] **Passo 1: Seletor de período**
+- [x] **Passo 1: Seletor de período**
 
 Criar `painel/src/componentes/SeletorPeriodo.tsx`:
 
@@ -1889,7 +1889,7 @@ export function SeletorPeriodo({ atual }: { atual: number }) {
 }
 ```
 
-- [ ] **Passo 2: Rota que dispara a sincronização**
+- [x] **Passo 2: Rota que dispara a sincronização**
 
 Criar `painel/src/app/atualizar/route.ts`:
 
@@ -1928,7 +1928,7 @@ export async function POST() {
 }
 ```
 
-- [ ] **Passo 3: Botão**
+- [x] **Passo 3: Botão**
 
 Criar `painel/src/componentes/BotaoAtualizar.tsx`:
 
@@ -1998,7 +1998,21 @@ export function BotaoAtualizar({ em }: { em: string | null }) {
 }
 ```
 
-- [ ] **Passo 4: Ligar o período na página**
+- [x] **Passo 4: Ligar o período na página**
+
+> **O bloco abaixo envelheceu — não o aplique ao pé da letra.** Ele foi
+> escrito antes das Tarefas 5 e 6 e reverteria duas correções já
+> commitadas: `TabelaAnuncios` virou `TabelaCriativos(criativos(linhas))`
+> em `bce35d5`, e o `<AvisoCaptura desde="2026-09-18" />` chumbado saiu em
+> `b0592e6` — a data vem de `r.inicioCaptura`, e o aviso some quando não há
+> lead nenhum. O que a Tarefa 7 acrescenta ao `page.tsx` é só o
+> `searchParams`, o `dias` que vai às três consultas, e o cabeçalho com o
+> seletor e o botão.
+>
+> A validação do `dias` também não ficou inline: mora em
+> `painel/src/lib/periodo.ts`, junto da lista `PERIODOS` que o seletor
+> desenha. Separadas, as duas podem discordar — e aí o seletor marca um
+> período e a tela mostra outro.
 
 Substituir `painel/src/app/page.tsx`:
 
@@ -2055,7 +2069,7 @@ export default async function Pagina(
 }
 ```
 
-- [ ] **Passo 5: Exercitar tudo**
+- [x] **Passo 5: Exercitar tudo**
 
 ```bash
 cd painel && npm run dev
@@ -2069,16 +2083,16 @@ Confira:
 3. Clicar **de novo em seguida** mostra `aguarde 5 min`, não um erro
 4. `localhost:3000/?dias=999` cai em 90 e o seletor mostra 90
 
-- [ ] **Passo 6: Rodar os testes e o build**
+- [x] **Passo 6: Rodar os testes e o build**
 
 ```bash
 cd painel && npm test && npm run build
 ```
 
-Esperado: 18 testes passando e build sem erro. Se o build falhar com
+Esperado: a suíte inteira passando (110 casos em 24/09/2026, dos quais 30 são desta tarefa) e build sem erro. Se o build falhar com
 `server-only`, algum componente de cliente está importando o servidor.
 
-- [ ] **Passo 7: Escrever o README**
+- [x] **Passo 7: Escrever o README**
 
 Criar `painel/README.md`:
 
@@ -2108,7 +2122,7 @@ cliente, com link por tenant e JWT, é a segunda metade da Fatia B2.
 `SUPABASE_SERVICE_ROLE_KEY`.
 ```
 
-- [ ] **Passo 8: Commit**
+- [x] **Passo 8: Commit**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego

@@ -32,7 +32,13 @@ const TEMPO = 90_000;
 async function tela(): Promise<string> {
   // `Pagina` é async: devolve a árvore já resolvida, e o que sobra dentro
   // dela é síncrono. Por isso `renderToStaticMarkup` dá conta.
-  return renderToStaticMarkup(await Pagina());
+  //
+  // Sem `dias` na URL a página cai em 90, que é o período com que os casos
+  // abaixo conferem o banco. O que o parâmetro faz com os três blocos é
+  // assunto de `periodo.test.ts`.
+  return renderToStaticMarkup(
+    await Pagina({ searchParams: Promise.resolve({}) }),
+  );
 }
 
 describe("a pagina inteira", () => {

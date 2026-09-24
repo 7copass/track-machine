@@ -23,10 +23,13 @@ vi.mock("@/lib/consultas", async (original) => ({
   resumo: vi.fn(),
   gastoPorDia: vi.fn(),
   anuncios: vi.fn(),
+  ultimaAtualizacao: vi.fn(),
 }));
 
 const { default: Pagina } = await import("@/app/page");
-const { anuncios, gastoPorDia, resumo } = await import("@/lib/consultas");
+const { anuncios, gastoPorDia, resumo, ultimaAtualizacao } = await import(
+  "@/lib/consultas"
+);
 
 const PONTOS: PontoDia[] = [
   { dia: "2026-07-02", gasto: 12345 },
@@ -75,7 +78,13 @@ async function tela(inicioCaptura: string | null): Promise<string> {
   vi.mocked(resumo).mockResolvedValue(comInicio(inicioCaptura));
   vi.mocked(gastoPorDia).mockResolvedValue(PONTOS);
   vi.mocked(anuncios).mockResolvedValue(ADS);
-  return renderToStaticMarkup(await Pagina());
+  // O carimbo de "atualizado às" é a quarta leitura da página, e sem dublê
+  // este arquivo deixaria de ser "sem banco" no dia em que alguém rodasse
+  // os testes offline.
+  vi.mocked(ultimaAtualizacao).mockResolvedValue("2026-09-24T01:18:07.953Z");
+  return renderToStaticMarkup(
+    await Pagina({ searchParams: Promise.resolve({}) }),
+  );
 }
 
 describe("a pagina, com o dado ditado", () => {
