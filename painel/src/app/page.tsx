@@ -14,6 +14,13 @@ export default async function Pagina() {
       </h1>
 
       <div style={{ display: "grid", gap: 20 }}>
+        {/*
+          A data sai do próprio dado — antes era a constante "2026-09-18"
+          escrita aqui, que continuaria afirmando 18/09 depois de qualquer
+          recarga do banco, e discordaria em silêncio da ressalva do card,
+          que sempre veio do dado. `null` enquanto não houver lead nenhum:
+          sem data não há o que avisar, e um aviso sem data não explica nada.
+        */}
         <AvisoCaptura desde="2026-09-18" />
         <Cards resumo={r} />
       </div>

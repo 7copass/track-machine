@@ -140,6 +140,36 @@ ver — e não um buraco no dado.
 leads ativa desde 18/09 — custo por lead disponível a partir dessa data"*.
 Ele desaparece sozinho quando houver 30 dias de lead acumulado.
 
+### O CPL misturado, que é pior que o ausente
+
+As duas decisões acima cobrem o CPL **ausente** na tabela. Elas não cobrem o
+CPL **presente e errado** no card — e esse é o problema maior, porque um
+buraco na tela se reconhece e um número plausível não.
+
+Medido em 23/09/2026, com o card somando o período inteiro:
+
+| | |
+|---|---|
+| gasto em 90 dias ÷ 29 leads | **R$ 1.084,80** |
+| gasto desde 18/09 ÷ 29 leads | **R$ 11,16** |
+
+Apenas **1,0%** do gasto é de quando já havia captura. O card errava por 97x,
+e quem olhasse concluiria que as campanhas são um desastre.
+
+**O numerador do CPL é o gasto da janela de captura, nunca o do período.**
+E como isso faz o card discordar dos dois vizinhos — Gasto e Leads, que
+mostram o período inteiro — **o card exibe a própria conta**: `R$ 323,86 ÷ 29
+· desde 18/09`. Sem isso o operador refaz a divisão de cabeça, não fecha, e
+passa a desconfiar dos três cartões. Quando o período pedido já começa depois
+do início da captura, os dois gastos são o mesmo e a ressalva some.
+
+**A âncora é um proxy, e isso precisa estar escrito.** O banco não registra o
+dia em que a captura foi ligada; registra o primeiro lead. Se a captura
+tivesse subido dias antes do primeiro lead chegar, o gasto desses dias ficaria
+fora do numerador e o CPL sairia **otimista**. Hoje as duas datas coincidem
+(18/09), então o proxy serve — no dia em que deixarem de coincidir, o viés
+passa a existir sem nada na tela indicando.
+
 Sem isso, o operador abre a tela, vê centenas de linhas sem CPL, e a primeira
 hipótese é que o cruzamento quebrou — quando o que está acontecendo é que o
 dado está começando.

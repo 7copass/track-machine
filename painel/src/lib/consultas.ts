@@ -3,10 +3,29 @@ import { cache } from "react";
 import { servidor } from "./supabase";
 
 export type Resumo = {
+  /** Gasto do período pedido, inteiro — é o que o card de Gasto mostra. */
   gasto: number;
+  /**
+   * A parte do gasto que caiu dentro da janela de captura.
+   *
+   * É o numerador de `cplMedio`, e existe separado de `gasto` porque os dois
+   * respondem perguntas diferentes: quanto se gastou no período, e quanto se
+   * gastou enquanto havia como contar lead. Igual a `gasto` sempre que o
+   * período pedido começar depois do início da captura — e é por essa
+   * igualdade que a tela decide se precisa explicar a divisão.
+   */
+  gastoComCaptura: number;
   leads: number;
   anuncios: number;
+  /**
+   * `gastoComCaptura / leads`, truncado — nunca `gasto / leads`.
+   *
+   * Ver `inicioDaCaptura`: dividir os 90 dias de gasto pelos leads de 5 dias
+   * dava R$ 1.084,80 onde o número é R$ 11,16.
+   */
   cplMedio: number | null;
+  /** Primeiro dia com lead, `YYYY-MM-DD`. Nulo enquanto não houver nenhum. */
+  inicioCaptura: string | null;
 };
 
 export type PontoDia = { dia: string; gasto: number };
@@ -185,23 +204,101 @@ const contaPorAnuncio = cache(async function () {
   return mapa;
 });
 
+/**
+ * Primeiro dia em que houve lead — a âncora da janela de captura.
+ *
+ * **O problema que isto existe para resolver.** O gasto tem 90 dias porque
+ * veio de um backfill da Meta; lead só existe a partir do dia em que a
+ * captura entrou no ar, e a Meta não guarda quem mandou mensagem antes.
+ * Dividir um pelo outro mistura duas janelas: medido em 23/09/2026,
+ * R$ 31.459,21 ÷ 29 = R$ 1.084,80, contra R$ 323,86 ÷ 29 = R$ 11,16 na
+ * janela em que havia captura. Só 1,0% do gasto é de quando dava para
+ * contar lead — o card errava por 97x, e quem olhasse concluiria que as
+ * campanhas são um desastre.
+ *
+ * **A consulta não filtra por período, de propósito.** A âncora é o início
+ * real da captura, não o primeiro dia com lead *dentro* da janela pedida.
+ * Com a segunda leitura, pedir 4 dias — janela que já começa depois da
+ * captura — jogaria fora o gasto dos dias sem lead ali dentro (medido:
+ * R$ 5,70 em 19/09) e a tela exibiria uma ressalva sobre uma janela que não
+ * tem nada de misturado.
+ *
+ * **A ressalva que o leitor futuro precisa conhecer: isto é um proxy.** O
+ * banco não registra em que dia a captura foi ligada; registra o primeiro
+ * lead. Se a captura tivesse subido alguns dias antes do primeiro lead
+ * chegar, o gasto desses dias ficaria de fora do numerador e o CPL sairia
+ * **otimista** — mais barato do que é. Aqui as duas datas coincidem
+ * (primeiro touchpoint em `ad_touchpoints` e primeiro dia com lead são
+ * ambos 2026-09-18), então o proxy serve. O dia em que deixarem de
+ * coincidir, o número passa a ter esse viés sem nada na tela indicando.
+ *
+ * Nem `min(received_at)` de `ad_touchpoints` resolveria: também é a
+ * primeira mensagem, não o momento em que se passou a escutar — e ainda
+ * discordaria do que a view chama de lead, que é o touchpoint casado com
+ * uma linha de insight do mesmo dia.
+ */
+export const inicioDaCaptura = cache(async function (): Promise<
+  string | null
+> {
+  const db = servidor();
+
+  const { data, error } = await db
+    .from("desempenho_por_anuncio")
+    .select("dia")
+    .gt("leads", 0)
+    .order("dia", { ascending: true })
+    .limit(1);
+
+  // Sem lead nenhum a resposta é uma lista vazia, que é um dado. Erro de
+  // rede ou de permissão também devolveria lista vazia se não se olhasse
+  // para `error` — e o painel diria "a captura ainda não começou" para uma
+  // consulta que quebrou.
+  if (error) {
+    throw new Error(`Falha ao ler o inicio da captura: ${error.message}`);
+  }
+
+  const dia = data?.[0]?.dia;
+  return dia === undefined || dia === null ? null : String(dia).slice(0, 10);
+});
+
 export async function resumo(dias: number): Promise<Resumo> {
-  const linhas = await linhasDoPeriodo(dias);
+  const [linhas, inicioCaptura] = await Promise.all([
+    linhasDoPeriodo(dias),
+    inicioDaCaptura(),
+  ]);
 
   let gasto = 0;
+  let gastoComCaptura = 0;
   let leads = 0;
   const ads = new Set<string>();
 
   for (const l of linhas) {
-    gasto += Number(l.gasto_centavos);
+    const centavos = Number(l.gasto_centavos);
+    const dia = String(l.dia).slice(0, 10);
+
+    gasto += centavos;
+    // `YYYY-MM-DD` ordena lexicograficamente igual ao calendário, então a
+    // comparação é direta — e não passa por `Date`, que interpretaria a
+    // string como meia-noite UTC e deslocaria o dia a oeste de Greenwich.
+    if (inicioCaptura !== null && dia >= inicioCaptura) {
+      gastoComCaptura += centavos;
+    }
     leads += Number(l.leads ?? 0);
     ads.add(l.ad_id);
   }
 
-  // Sobre os totais, nunca a média dos CPLs individuais.
-  const cplMedio = leads > 0 ? Math.floor(gasto / leads) : null;
+  // Sobre os totais, nunca a média dos CPLs individuais — e sobre o gasto da
+  // janela que tem lead, nunca o do período inteiro.
+  const cplMedio = leads > 0 ? Math.floor(gastoComCaptura / leads) : null;
 
-  return { gasto, leads, anuncios: ads.size, cplMedio };
+  return {
+    gasto,
+    gastoComCaptura,
+    leads,
+    anuncios: ads.size,
+    cplMedio,
+    inicioCaptura,
+  };
 }
 
 export async function gastoPorDia(dias: number): Promise<PontoDia[]> {

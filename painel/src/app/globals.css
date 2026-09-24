@@ -51,3 +51,10 @@ body {
 
 /* Tabular para numero: sem isso as colunas dancam a cada atualizacao. */
 .numero { font-variant-numeric: tabular-nums; }
+
+/*
+ * O texto secundario do card de custo por lead: a conta que ele fez.
+ * Tabular pelo mesmo motivo de `.numero` — a ressalva e quase toda numero,
+ * e sem isso ela treme a cada atualizacao.
+ */
+.ressalva { font-variant-numeric: tabular-nums; }

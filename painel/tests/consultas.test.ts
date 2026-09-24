@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   anuncios,
   gastoPorDia,
+  inicioDaCaptura,
   resumo,
   ultimaAtualizacao,
 } from "@/lib/consultas";
@@ -15,7 +16,21 @@ import { servidor } from "@/lib/supabase";
 // Cada caso lê alguns milhares de linhas pela rede, às vezes duas vezes
 // para cruzar dois números. Os 5s padrão do Vitest estouram nisso, e o
 // timeout se disfarçaria de falha de agregação.
-const TEMPO = 30_000;
+/**
+ * Orçamento por teste, generoso de propósito.
+ *
+ * Esta suíte fala com o banco de produção pela rede: uma leitura completa
+ * da view são 5 páginas de 1000 linhas, medidas em ~1,4s cada, e há caso
+ * que faz duas leituras concorrentes. Com 30s o caso de `gastoPorDia` vs
+ * `resumo` ficava em ~25s — passava quase sempre e falhava quando a rede
+ * respirava, que é o pior dos mundos: vermelho intermitente ensina a
+ * ignorar vermelho.
+ *
+ * Em produção o custo é outro: o `cache()` do React deduplica dentro do
+ * mesmo request, então a página faz UMA leitura. Aqui cada teste chama as
+ * funções isoladamente, de fora de um request, e nada deduplica.
+ */
+const TEMPO = 90_000;
 
 describe("leitura do periodo", () => {
   it(
@@ -98,9 +113,13 @@ describe("resumo", () => {
     async () => {
       // Somar medias produz numero errado. Com gasto G e leads L, o CPL
       // medio e G/L — e nunca a media dos G_i/L_i de cada anuncio.
+      //
+      // O G aqui e o gasto da janela em que ja havia captura, nao o do
+      // periodo inteiro: ver "CPL sobre a janela de captura", no fim deste
+      // arquivo, para por que os dois nao podem ser o mesmo numero.
       const r = await resumo(90);
       if (r.leads > 0) {
-        expect(r.cplMedio).toBe(Math.floor(r.gasto / r.leads));
+        expect(r.cplMedio).toBe(Math.floor(r.gastoComCaptura / r.leads));
       } else {
         expect(r.cplMedio).toBeNull();
       }
@@ -117,8 +136,10 @@ describe("resumo", () => {
       // pela média dos CPLs não faria teste nenhum ficar vermelho.
       //
       // Aqui se verifica que os dois números são de fato distinguíveis:
-      // a maior parte do gasto está em anúncios sem lead nenhum, então o
-      // agregado é muito maior que a média dos CPLs individuais.
+      // parte do gasto da janela de captura está em anúncios que não
+      // trouxeram lead nenhum (medido em 23/09: R$ 110,82 dos R$ 323,86, um
+      // terço), e esse gasto entra no agregado sem entrar em nenhum CPL
+      // individual — então o agregado fica acima da média dos individuais.
       const [r, linhas] = await Promise.all([resumo(90), anuncios(90)]);
       const comLead = linhas.filter((l) => l.cpl !== null);
       expect(comLead.length).toBeGreaterThan(0);
@@ -330,6 +351,197 @@ describe("ultimaAtualizacao", () => {
       const em = await ultimaAtualizacao();
       expect(em).not.toBeNull();
       expect(Number.isNaN(new Date(em!).getTime())).toBe(false);
+    },
+    TEMPO,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// A janela de captura.
+//
+// O gasto tem 90 dias porque veio de um backfill da Meta; lead so existe a
+// partir do dia em que a captura entrou no ar. Dividir um pelo outro mistura
+// duas janelas e produz um CPL ~97x maior que o real. Medido em 23/09:
+// R$ 31.459,21 / 29 = R$ 1.084,80 contra R$ 323,86 / 29 = R$ 11,16.
+// ---------------------------------------------------------------------------
+
+/** O mesmo corte que `desde()` faz na implementacao — em UTC, nao local. */
+function desdeUTC(dias: number): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - dias);
+  return d.toISOString().slice(0, 10);
+}
+
+/** Le uma janela curta da view inteira, provando que nao truncou. */
+async function janela(desdeISO: string) {
+  const db = servidor();
+  const { data, count, error } = await db
+    .from("desempenho_por_anuncio")
+    .select("dia, gasto_centavos, leads", { count: "exact" })
+    .gte("dia", desdeISO)
+    .order("dia", { ascending: true })
+    .order("ad_id", { ascending: true })
+    .range(0, 999);
+
+  expect(error).toBeNull();
+  // Uma leitura truncada pelo teto de 1000 linhas do PostgREST daria um
+  // total menor sem erro nenhum, e a conferencia abaixo compararia o
+  // numero da implementacao com um numero igualmente errado.
+  expect(count!).toBeLessThan(1000);
+  expect(data!.length).toBe(count);
+
+  const porDia = new Map<string, { gasto: number; leads: number }>();
+  for (const l of data!) {
+    const d = String(l.dia).slice(0, 10);
+    const atual = porDia.get(d) ?? { gasto: 0, leads: 0 };
+    atual.gasto += Number(l.gasto_centavos);
+    atual.leads += Number(l.leads ?? 0);
+    porDia.set(d, atual);
+  }
+  return porDia;
+}
+
+describe("CPL sobre a janela de captura", () => {
+  it(
+    "divide o gasto de quando ja havia captura, nao o do periodo inteiro",
+    async () => {
+      const r = await resumo(90);
+
+      expect(r.inicioCaptura).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+      expect(r.leads).toBeGreaterThan(0);
+      expect(Number.isInteger(r.gastoComCaptura)).toBe(true);
+
+      expect(r.gastoComCaptura).toBeGreaterThan(0);
+      // Invariante permanente: o numerador nunca passa do gasto do periodo.
+      expect(r.gastoComCaptura).toBeLessThanOrEqual(r.gasto);
+
+      // A assercao que vale sempre.
+      expect(r.cplMedio).toBe(Math.floor(r.gastoComCaptura / r.leads));
+
+      // A que distingue os dois numeros so vale enquanto houver gasto
+      // anterior a captura. Escrita como `toBeLessThan(r.gasto)` fixo, ela
+      // viraria vermelha sozinha por volta de 17/12/2026, quando a captura
+      // completar 90 dias e as duas janelas convergirem: ninguem teria
+      // mudado codigo, e o vermelho seria do calendario. Vermelho que chega
+      // sem culpado ensina a ignorar vermelho.
+      if (r.gastoComCaptura < r.gasto) {
+        expect(r.cplMedio).not.toBe(Math.floor(r.gasto / r.leads));
+        expect(r.cplMedio!).toBeLessThan(Math.floor(r.gasto / r.leads));
+      } else {
+        // Convergiram. Este caso deixou de distinguir numerador de
+        // denominador, e nenhum outro teste desta suite distingue: trocar
+        // `gastoComCaptura` por `gasto` em `resumo` passaria despercebido a
+        // partir daqui. Se isso acontecer e o CPL ainda importar, o caminho
+        // e injetar as linhas em `resumo` para poder testa-la com fixture.
+        expect(r.gastoComCaptura).toBe(r.gasto);
+      }
+    },
+    TEMPO,
+  );
+
+  it(
+    "ancora a janela no primeiro dia com lead, conferido contra o banco",
+    async () => {
+      // A ancora nao pode sair do mesmo caminho que se quer conferir: aqui
+      // ela vem de uma consulta independente, sem filtro de periodo.
+      const db = servidor();
+      const { data, error } = await db
+        .from("desempenho_por_anuncio")
+        .select("dia")
+        .gt("leads", 0)
+        .order("dia", { ascending: true })
+        .limit(1);
+
+      expect(error).toBeNull();
+      expect(data!.length).toBe(1);
+      const primeiro = String(data![0].dia).slice(0, 10);
+
+      const r = await resumo(90);
+      expect(r.inicioCaptura).toBe(primeiro);
+
+      // E o numerador e de fato a soma do gasto a partir dessa data.
+      const porDia = await janela(primeiro);
+      const soma = [...porDia.values()].reduce((s, d) => s + d.gasto, 0);
+      expect(r.gastoComCaptura).toBe(soma);
+    },
+    TEMPO,
+  );
+
+  it(
+    "janela inteiramente dentro da captura nao tem ressalva nenhuma",
+    async () => {
+      // Quando o periodo pedido comeca DEPOIS do inicio da captura, gasto e
+      // gasto-com-captura sao a mesma coisa, e a tela nao deve exibir
+      // ressalva — ela seria ruido sobre uma janela que nao esta misturada.
+      const r90 = await resumo(90);
+      const inicio = r90.inicioCaptura!;
+
+      // A maior janela cujo primeiro dia cai depois do inicio da captura.
+      const hoje = new Date();
+      const hojeUTC = Date.UTC(
+        hoje.getUTCFullYear(),
+        hoje.getUTCMonth(),
+        hoje.getUTCDate(),
+      );
+      const dias =
+        Math.round((hojeUTC - Date.parse(`${inicio}T00:00:00Z`)) / 86_400_000) -
+        1;
+
+      // Se a captura comecou ontem nao existe janela assim, e este caso
+      // deixa de provar o que diz. Vermelho e melhor que verde a toa.
+      expect(dias).toBeGreaterThanOrEqual(1);
+      const corte = desdeUTC(dias);
+      expect(corte > inicio).toBe(true);
+
+      const porDia = await janela(corte);
+      const ordenados = [...porDia.keys()].sort();
+      const primeiroComLead = ordenados.find((d) => porDia.get(d)!.leads > 0);
+      expect(primeiroComLead).toBeDefined();
+
+      // O dente deste caso. Uma implementacao que ancorasse no primeiro dia
+      // com lead DENTRO da janela — em vez do inicio real da captura —
+      // jogaria fora o gasto destes dias e mostraria ressalva numa janela
+      // que nao precisa de nenhuma. Sem gasto aqui, as duas implementacoes
+      // coincidem e o caso passa sem exercer nada.
+      const gastoAntes = ordenados
+        .filter((d) => d < primeiroComLead!)
+        .reduce((s, d) => s + porDia.get(d)!.gasto, 0);
+      expect(gastoAntes).toBeGreaterThan(0);
+
+      const r = await resumo(dias);
+      expect(r.gasto).toBeGreaterThan(0);
+      expect(r.leads).toBeGreaterThan(0);
+      expect(r.gastoComCaptura).toBe(r.gasto);
+      expect(r.cplMedio).toBe(Math.floor(r.gasto / r.leads));
+      // A data continua vindo do dado, mesmo quando a janela nao a alcanca.
+      expect(r.inicioCaptura).toBe(inicio);
+    },
+    TEMPO,
+  );
+});
+
+describe("falha de leitura nao vira 'nao ha captura'", () => {
+  it(
+    "a consulta da ancora levanta quando o banco nao responde",
+    async () => {
+      // Lista vazia e a resposta legitima para "ainda nao houve lead". Um
+      // erro de rede, de permissao ou de nome de coluna produz a MESMA lista
+      // vazia se ninguem olhar para `error` — e ai o painel some com o aviso,
+      // some com a ressalva, e volta a dividir os 90 dias de gasto pelos
+      // leads de 5 dias. O numero errado de antes, agora sem nada na tela
+      // explicando de onde veio.
+      const url = process.env.SUPABASE_URL;
+      // Porta 1 recusa conexao na hora; nao ha espera nem dependencia de rede.
+      process.env.SUPABASE_URL = "http://127.0.0.1:1";
+      try {
+        await expect(inicioDaCaptura()).rejects.toThrow(/inicio da captura/i);
+      } finally {
+        process.env.SUPABASE_URL = url;
+      }
+
+      // E o env voltou: sem isto, um caso posterior herdaria a URL quebrada
+      // e a falha apareceria longe da causa.
+      expect(await inicioDaCaptura()).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     },
     TEMPO,
   );
