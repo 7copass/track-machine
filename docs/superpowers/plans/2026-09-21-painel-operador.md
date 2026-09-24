@@ -112,7 +112,7 @@ e visual se confere olhando.
 - Produz: `servidor(): SupabaseClient` em `painel/src/lib/supabase.ts` — o
   cliente com `service_role`, importável **apenas** de Server Component.
 
-- [ ] **Passo 1: Criar o projeto**
+- [x] **Passo 1: Criar o projeto**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
@@ -122,7 +122,7 @@ npx create-next-app@latest painel \
 cd painel && npm install @supabase/supabase-js
 ```
 
-- [ ] **Passo 2: Guardar a chave e proteger do git**
+- [x] **Passo 2: Guardar a chave e proteger do git**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
@@ -140,7 +140,7 @@ git check-ignore -v painel/.env.local
 Esperado: o `check-ignore` confirma que o arquivo está protegido. **Não
 imprima o conteúdo dele.**
 
-- [ ] **Passo 3: Escrever o cliente do servidor**
+- [x] **Passo 3: Escrever o cliente do servidor**
 
 Criar `painel/src/lib/supabase.ts`:
 
@@ -178,7 +178,7 @@ export function servidor(): SupabaseClient {
 cd painel && npm install server-only
 ```
 
-- [ ] **Passo 4: Provar a conexão na tela**
+- [x] **Passo 4: Provar a conexão na tela**
 
 Substituir `painel/src/app/page.tsx` por:
 
@@ -225,7 +225,7 @@ export default async function Pagina() {
 }
 ```
 
-- [ ] **Passo 5: Rodar e conferir**
+- [x] **Passo 5: Rodar e conferir**
 
 ```bash
 cd painel && npm run dev
@@ -252,7 +252,7 @@ print(r)
 "
 ```
 
-- [ ] **Passo 6: Confirmar que a chave não vaza**
+- [x] **Passo 6: Confirmar que a chave não vaza**
 
 ```bash
 cd painel && npm run build
@@ -278,7 +278,7 @@ grep -rlF "$CHAVE" .next/ 2>/dev/null \
 
 Esperado: o controle passa e a chave não aparece.
 
-- [ ] **Passo 6b: Provar que o `server-only` realmente barra**
+- [x] **Passo 6b: Provar que o `server-only` realmente barra**
 
 O passo acima passa mesmo se o `server-only` não estiver fazendo nada —
 ele só constata ausência. Para provar que a barreira existe, force o caso
@@ -304,7 +304,7 @@ Esperado: `'server-only' cannot be imported from a Client Component module`.
 Se o build **passar**, a única proteção automática do desenho não existe, e
 a chave de serviço pode chegar ao navegador no primeiro descuido.
 
-- [ ] **Passo 7: Commit**
+- [x] **Passo 7: Commit**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
@@ -337,7 +337,7 @@ automatica aqui; o resto seria disciplina."
   `diaCurto(iso: string): string`,
   `horaCurta(iso: string | null): string`.
 
-- [ ] **Passo 1: Instalar o Vitest**
+- [x] **Passo 1: Instalar o Vitest**
 
 ```bash
 cd painel && npm install -D vitest
@@ -371,7 +371,7 @@ export default defineConfig({
 
 Acrescentar ao `scripts` do `painel/package.json`: `"test": "vitest run"`.
 
-- [ ] **Passo 2: Escrever os testes que falham**
+- [x] **Passo 2: Escrever os testes que falham**
 
 Criar `painel/tests/formato.test.ts`:
 
@@ -479,7 +479,7 @@ describe("horaCurta", () => {
 });
 ```
 
-- [ ] **Passo 3: Rodar e confirmar que falha**
+- [x] **Passo 3: Rodar e confirmar que falha**
 
 ```bash
 cd painel && npm test
@@ -487,7 +487,7 @@ cd painel && npm test
 
 Esperado: FALHA com `Failed to resolve import "@/lib/formato"`.
 
-- [ ] **Passo 4: Implementar**
+- [x] **Passo 4: Implementar**
 
 Criar `painel/src/lib/formato.ts`:
 
@@ -555,7 +555,7 @@ export function horaCurta(iso: string | null): string {
 }
 ```
 
-- [ ] **Passo 5: Rodar e confirmar que passa**
+- [x] **Passo 5: Rodar e confirmar que passa**
 
 ```bash
 cd painel && npm test
@@ -563,7 +563,7 @@ cd painel && npm test
 
 Esperado: 15 testes passando.
 
-- [ ] **Passo 6: Commit**
+- [x] **Passo 6: Commit**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
@@ -600,7 +600,7 @@ o erro que a view de desempenho existe para evitar."
   `anuncios(dias: number): Promise<LinhaAnuncio[]>`,
   `ultimaAtualizacao(): Promise<string | null>`.
 
-- [ ] **Passo 1: Escrever os testes que falham**
+- [x] **Passo 1: Escrever os testes que falham**
 
 Criar `painel/tests/consultas.test.ts`:
 
@@ -714,7 +714,7 @@ describe("anuncios", () => {
 });
 ```
 
-- [ ] **Passo 2: Rodar e confirmar que falha**
+- [x] **Passo 2: Rodar e confirmar que falha**
 
 ```bash
 cd painel && npm test
@@ -722,7 +722,7 @@ cd painel && npm test
 
 Esperado: FALHA com `Failed to resolve import "@/lib/consultas"`.
 
-- [ ] **Passo 3: Carregar o `.env.local` nos testes**
+- [x] **Passo 3: Carregar o `.env.local` nos testes**
 
 Acrescentar a `painel/vitest.config.ts`, dentro de `test`:
 
@@ -744,7 +744,7 @@ config({ path: ".env.local" });
 cd painel && npm install -D dotenv
 ```
 
-- [ ] **Passo 4: Implementar**
+- [x] **Passo 4: Implementar**
 
 Criar `painel/src/lib/consultas.ts`:
 
@@ -988,7 +988,7 @@ export async function ultimaAtualizacao(): Promise<string | null> {
 }
 ```
 
-- [ ] **Passo 5: Rodar e confirmar que passa**
+- [x] **Passo 5: Rodar e confirmar que passa**
 
 ```bash
 cd painel && npm test
@@ -996,7 +996,7 @@ cd painel && npm test
 
 Esperado: 24 testes passando (15 de formato + 9 de consultas).
 
-- [ ] **Passo 6: Conferir contra o SQL direto**
+- [x] **Passo 6: Conferir contra o SQL direto**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
@@ -1027,7 +1027,7 @@ e a divergência pareceria erro de agregação quando é só de referencial.
 > elas comparam duas leituras independentes do banco, não a mesma leitura
 > devolvida duas vezes.
 
-- [ ] **Passo 7: Commit**
+- [x] **Passo 7: Commit**
 
 ```bash
 cd /Users/victorhugosantanaalmeida/Clientes-Victor-Tráfego
