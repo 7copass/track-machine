@@ -183,8 +183,13 @@ const linhasDoPeriodo = cache(async function (dias: number) {
  * A alternativa seria alterar a view, mas isso é migração de banco — fora
  * do escopo desta tarefa, e caro para uma coluna que só a tabela usa.
  *
- * Nem todo anúncio tem conta conhecida: 42 dos 840 estão no cache sem
- * `act_id`. O nulo aqui é o do banco, não um erro de leitura.
+ * O tipo admite `null` porque a coluna admite: quando um anúncio aparece
+ * nos insights antes do enriquecimento resolvê-lo na Graph API, ele entra
+ * no cache sem `act_id`. Hoje isso não acontece com nenhum — o backfill de
+ * 23/09 resolveu os 43 que faltavam, e a medição de agora dá **0 de 840 no
+ * cache, 0 de 836 na janela de 90 dias**. O nulo continua possível para
+ * anúncio novo, e o nulo que chegar aqui é o do banco, não erro de
+ * leitura.
  */
 const contaPorAnuncio = cache(async function () {
   const db = servidor();

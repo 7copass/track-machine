@@ -218,7 +218,9 @@ dia do projeto.
 A consulta acima devolve uma linha por `ad_id`. **A tela não mostra essas
 linhas diretamente**: agrupa por `ad_name` antes de renderizar.
 
-Medido na base, com os 840 anúncios do período já enriquecidos:
+Medido em **23/09/2026**, com os 840 anúncios do período já enriquecidos.
+Os absolutos envelhecem — a janela de 90 dias desliza e no dia seguinte
+eram 836 — mas a conclusão não depende deles:
 
 | chave | linhas | quantas ficam ambíguas |
 |---|---|---|
@@ -227,8 +229,8 @@ Medido na base, com os 840 anúncios do período já enriquecidos:
 | nome + conta | — | 742 de 840 |
 | nome + campanha + conjunto | — | 291 de 840 |
 
-`AD03 - IMG - INFOR` aparece **17 vezes na mesma conta**, em campanhas e
-conjuntos diferentes — é o mesmo criativo reusado, que é a prática normal
+`AD03 - IMG - INFOR` aparecia **17 vezes** na medição de 23/09, e **20
+vezes, em 2 contas**, na de 24/09 — em campanhas e conjuntos diferentes — é o mesmo criativo reusado, que é a prática normal
 na Meta. Nenhuma combinação de rótulos legíveis separa os 840 anúncios: só
 o `ad_id`, que não diz nada a um humano.
 
